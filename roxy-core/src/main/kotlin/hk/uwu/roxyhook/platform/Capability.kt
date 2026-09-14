@@ -1,0 +1,8 @@
+package hk.uwu.roxyhook.platform
+
+import java.lang.reflect.Executable
+
+enum class Capability {
+    METHOD_HOOK, CONSTRUCTOR_HOOK, INVOKE_ORIGINAL, INTERCEPTOR_CHAIN, ATOMIC_REPLACEMENT,
+    DEOPTIMIZATION, CLASS_INITIALIZER, REMOTE_PREFERENCES, REMOTE_FILES
+}

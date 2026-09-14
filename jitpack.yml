@@ -1,0 +1,15 @@
+# JitPack build configuration for RoxyHook.
+# JitPack builds on a Linux container with an Android SDK preinstalled; we only
+# need to pin the JDK and tell it how to produce the Maven coordinates.
+jdk:
+  - openjdk21
+before_install:
+  # Ensure the wrapper is executable inside JitPack's Linux container.
+  - chmod +x ./gradlew
+install:
+  # Publish every library module (JVM jars + Android AARs) via the aggregate
+  # task, then the Gradle plugin + its plugin marker from the included build,
+  # into JitPack's local Maven repository. This produces the
+  # com.github.<user>.RoxyHook:<artifact>:<tag> coordinates for consumers.
+  - ./gradlew publishAllToMavenLocal -x test --no-daemon
+  - ./gradlew -p roxy-gradle-plugin publishToMavenLocal -x test --no-daemon

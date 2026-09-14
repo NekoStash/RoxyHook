@@ -1,0 +1,22 @@
+[versions]
+# Pinned to the upstream toolchain/reference versions inspected for this source delivery.
+agp = "9.3.2"
+kotlin = "2.4.10"
+libxposed = "102.0.0"
+kavaref = "1.1.0"
+ksp = "2.3.9"
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+android-library = { id = "com.android.library", version.ref = "agp" }
+android-application = { id = "com.android.application", version.ref = "agp" }
+
+[libraries]
+libxposed-api = { module = "io.github.libxposed:api", version.ref = "libxposed" }
+libxposed-service = { module = "io.github.libxposed:service", version.ref = "libxposed" }
+kavaref-bom = { module = "com.highcapable.kavaref:kavaref-bom", version.ref = "kavaref" }
+kavaref-core = { module = "com.highcapable.kavaref:kavaref-core" }
+kavaref-extension = { module = "com.highcapable.kavaref:kavaref-extension" }
+kavaref-android = { module = "com.highcapable.kavaref:kavaref-android" }
+
+ksp-api = { module = "com.google.devtools.ksp:symbol-processing-api", version.ref = "ksp" }
