@@ -7,6 +7,9 @@ import java.lang.reflect.Executable
 import com.highcapable.kavaref.resolver.MethodResolver
 import com.highcapable.kavaref.resolver.ConstructorResolver
 
+/** Remote-preferences group used by [PackageScope.prefs] and [PackageScope.prefs]. */
+const val DEFAULT_PREFERENCES_GROUP = "default"
+
 class PackageScope internal constructor(val runtime: RoxyRuntime, val context: PackageContext) {
     val packageName get() = context.packageName
     val processName get() = context.processName
@@ -17,6 +20,13 @@ class PackageScope internal constructor(val runtime: RoxyRuntime, val context: P
     val userId get() = context.userId
     val stage get() = context.stage
     val modulePackageName get() = context.modulePackageName
+    /** Declared main process name of this package; compare against [processName] via [isMainProcess]. */
+    val mainProcessName get() = context.mainProcessName
+    /**
+     * Absolute path of the module's own APK when the platform reported it at module load;
+     * null on platforms without that fact. Never derived from path guessing or package scans.
+     */
+    val moduleApkPath get() = context.moduleApkPath
 
     fun loadApp(vararg names: String, block: PackageScope.() -> Unit) {
         require(names.all { it.isNotBlank() }) { "Package names must not be blank" }
@@ -73,7 +83,12 @@ class PackageScope internal constructor(val runtime: RoxyRuntime, val context: P
         runtime.platform.requireCapability(Capability.DEOPTIMIZATION)
         return runtime.platform.deoptimize(this)
     }
-    fun prefs(group: String = "default"): Preferences {
+    /** Remote preferences of the [DEFAULT_PREFERENCES_GROUP] group. Fails without REMOTE_PREFERENCES. */
+    val prefs: Preferences get() = prefs()
+    /** Same as [prefs]; the explicit-call form of the default remote preferences group. */
+    fun prefs(): Preferences = prefs(DEFAULT_PREFERENCES_GROUP)
+    /** Remote preferences of an explicitly named group. Blank names are rejected. */
+    fun prefs(group: String): Preferences {
         require(group.isNotBlank())
         runtime.platform.requireCapability(Capability.REMOTE_PREFERENCES)
         return runtime.platform.preferences(group)

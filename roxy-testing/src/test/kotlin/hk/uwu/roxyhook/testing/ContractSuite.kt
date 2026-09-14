@@ -269,6 +269,51 @@ object ContractSuite {
             throws<UnsupportedCapabilityException> { r.scope().prefs() }
             throws<UnsupportedCapabilityException> { r.hookClassInitializer(Fixture::class.java) { before {} } }
         } }
+        test("default prefs property and function share the default group") {
+            val requested = mutableListOf<String>()
+            // `by` forwards the default requireCapability to the delegate's own capabilities;
+            // override it so the check sees this object's set.
+            val platform = object : HookPlatform by ReflectionPlatform() {
+                override val capabilities get() = setOf(Capability.REMOTE_PREFERENCES)
+                override fun requireCapability(capability: Capability) {
+                    check(capability in capabilities) { "unexpected capability" }
+                }
+                override fun preferences(group: String): Preferences {
+                    requested += group
+                    return object : Preferences {
+                        override fun contains(name: String) = false
+                        override fun <T : Any> get(key: PreferenceKey<T>) = key.default
+                        override fun observe(listener: (String?) -> Unit) = Subscription.once {}
+                    }
+                }
+            }
+            RoxyRuntime(platform).use { r -> with(r.scope()) {
+                check(prefs.get(stringPreference("k")) == "")
+                equal("", prefs().get(stringPreference("k")))
+                check(prefs("other").get(stringPreference("k")) == "")
+            } }
+            equal(listOf("default", "default", "other"), requested)
+        }
+        test("blank preference group and missing capability are rejected") { scenario { _, r, _ ->
+            throws<IllegalArgumentException> { r.scope().prefs(" ") }
+            throws<UnsupportedCapabilityException> { r.scope().prefs }
+            throws<UnsupportedCapabilityException> { r.scope().prefs() }
+        } }
+        test("mainProcessName and moduleApkPath surface context facts") { scenario { _, r, _ ->
+            val ctx = PackageContext("demo.app", "demo.app:worker", loader,
+                mainProcessName = "demo.app", moduleApkPath = "/data/app/mod.apk")
+            with(r.scope(ctx)) {
+                equal("demo.app", mainProcessName); equal("demo.app:worker", processName)
+                check(!isMainProcess); equal("/data/app/mod.apk", moduleApkPath)
+            }
+            equal(null, r.scope().moduleApkPath)
+        } }
+        test("platformSnapshot carries the event payload opaquely") { scenario { _, r, _ ->
+            val marker = object : PlatformSnapshot() {}
+            val ctx = PackageContext("demo.app", "demo.app", loader, platformSnapshot = marker)
+            check(r.scope(ctx).context.platformSnapshot === marker)
+            equal(null, r.scope().context.platformSnapshot)
+        } }
         test("preference keys validate names and copy default sets") {
             throws<IllegalArgumentException> { stringPreference(" ") }
             val source = mutableSetOf("a"); val key = stringSetPreference("set", source); source += "b"

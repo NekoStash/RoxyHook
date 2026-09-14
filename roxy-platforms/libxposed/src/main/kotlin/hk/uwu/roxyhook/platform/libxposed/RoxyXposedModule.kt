@@ -6,6 +6,7 @@ import android.os.Process
 import android.os.UserHandle
 import androidx.annotation.RequiresApi
 import hk.uwu.roxyhook.*
+import hk.uwu.roxyhook.android.ApplicationInfoSnapshot
 import hk.uwu.roxyhook.android.lifecycle.LifecycleRegistry
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.*
@@ -30,7 +31,8 @@ abstract class RoxyXposedModule : XposedModule() {
     }
     private fun initialize(param: ModuleLoadedParam) {
         check(currentRuntime == null) { "Module generation has already been initialized" }
-        process = ProcessContext(param.processName, param.isSystemServer, moduleApplicationInfo.packageName)
+        process = ProcessContext(param.processName, param.isSystemServer,
+            moduleApplicationInfo.packageName, moduleApplicationInfo.sourceDir)
         currentRuntime = RoxyRuntime(LibXposedPlatform(this), configuration()).also { runtime ->
             module?.let { business -> runtime.onClose { business.onDispose() } }
         }
@@ -53,16 +55,18 @@ abstract class RoxyXposedModule : XposedModule() {
     }
     final override fun onSystemServerStarting(param: SystemServerStartingParam) = guarded {
         check(process.isSystemServer) { "System-server event delivered to an app process" }
+        // system_server events carry no ApplicationInfo: platformSnapshot stays null.
         val scope = roxy.scope(PackageContext("android", process.processName, param.classLoader,
             isFirstPackage = true, isSystemServer = true, stage = LoadStage.SYSTEM_SERVER_STARTING,
             mainProcessName = process.processName, userId = currentUserId(),
-            modulePackageName = process.modulePackageName))
+            modulePackageName = process.modulePackageName, moduleApkPath = process.moduleApkPath))
         with(scope) { onHook() }
     }
     private fun packageScope(param: PackageLoadedParam, loader: ClassLoader, stage: LoadStage): PackageScope =
         roxy.scope(PackageContext(param.packageName, process.processName, loader, param.isFirstPackage,
-            process.isSystemServer, stage, param.applicationInfo.processName ?: param.packageName,
-            currentUserId(), process.modulePackageName))
+            process.isSystemServer, stage, param.applicationInfo?.processName ?: param.packageName,
+            currentUserId(), process.modulePackageName, process.moduleApkPath,
+            param.applicationInfo?.let(::ApplicationInfoSnapshot)))
 
     /**
      * Multi-user / work-profile / isolated-process user id. Verified against this machine's

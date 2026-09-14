@@ -17,6 +17,12 @@ fun PackageScope.lifecycle(block: LifecycleBuilder.() -> Unit): Subscription {
 fun PackageScope.onAppLifecycle(block: LifecycleBuilder.() -> Unit): Subscription = lifecycle(block)
 val PackageScope.application: Application? get() = registry().application(packageName)
 val PackageScope.appContext: Context? get() = registry().appContext(packageName)
+/**
+ * Host application's [Resources], a read-only convenience for `appContext?.resources`.
+ * Same lifecycle semantics as [appContext]: null until the application has attached, and reading
+ * it in system_server fails just like [appContext]. The host's resources are never mutated.
+ */
+val PackageScope.appResources: android.content.res.Resources? get() = appContext?.resources
 fun PackageScope.onAttach(block: LifecycleEvent.() -> Unit): Subscription = lifecycle { onAttach(block = block) }
 fun PackageScope.onCreate(block: LifecycleEvent.() -> Unit): Subscription = lifecycle { onCreate(block = block) }
 fun PackageScope.withAppContext(block: Context.() -> Unit): Subscription = lifecycle {

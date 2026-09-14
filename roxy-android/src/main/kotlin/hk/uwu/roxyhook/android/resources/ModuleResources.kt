@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.res.Resources
 import android.graphics.drawable.Drawable
 import hk.uwu.roxyhook.PackageScope
+import hk.uwu.roxyhook.android.lifecycle.appContext
+import hk.uwu.roxyhook.android.systemContext
 
 /** Read module assets/resources through an isolated package Context; never mutate host Resources. */
 class ModuleResources(hostContext: Context, val packageName: String) {
@@ -18,3 +20,12 @@ class ModuleResources(hostContext: Context, val packageName: String) {
 }
 fun PackageScope.moduleResources(hostContext: Context): ModuleResources =
     ModuleResources(hostContext, checkNotNull(modulePackageName) { "Module package is unavailable" })
+/**
+ * Module resources resolved against the ambient host context: [appContext] for app packages, or
+ * [systemContext] inside system_server. Fails fast when the module package name is unavailable,
+ * the host application has not attached yet, or the system context cannot be resolved.
+ */
+val PackageScope.moduleResources: ModuleResources
+    get() = moduleResources(if (isSystemServer) systemContext else checkNotNull(appContext) {
+        "Module resources need an attached application context; read inside a lifecycle callback"
+    })

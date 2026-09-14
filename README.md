@@ -139,6 +139,23 @@ RLog.error("hook failed", throwable)
 
 路由规则：每次调用从当前打开的注入运行时（`platform.info.isInjected`）取得平台 logger，因此注入场景下消息进入框架日志；无活动注入运行时（模块自身进程、运行时已关闭、纯 JVM 测试）时回退到 `RoxyLogger.STDERR`，不会静默丢弃。`PackageScope.log` 走同一派发路径并自动附加 `[包名/进程名]` 前缀。RLog 仅弱引用运行时快照，不会产生全局强引用。
 
+### PackageScope 常用上下文
+
+`PackageScope` 统一暴露当次注入事件的常用上下文，减少每个 Hook 里重复保管的样板代码：
+
+| API | 语义 / 前置条件 |
+| --- | --- |
+| `mainProcessName` / `isMainProcess` / `processName` | 包声明的主进程名与当前进程名。 |
+| `appInfo` | 当次 package 事件的 `ApplicationInfo` 防御性快照；system_server 或无平台数据时为 `null`。 |
+| `application` / `appContext` / `appResources` | 宿主 Application attach 之后可用；attach 前为 `null`，system_server 中读取会失败。 |
+| `systemContext` | **仅 system_server**。经 `SystemContextResolver` 调用 `ActivityThread` 隐藏 API；失败抛出带原因的 `IllegalStateException`，无回退。 |
+| `moduleAppFile` | 模块自身 APK `File`（LibXposed `moduleApplicationInfo.sourceDir`）；平台未提供时失败。 |
+| `moduleResources` | 模块资源；app 进程用 `appContext`、system_server 用 `systemContext` 作宿主 Context，未就绪即失败。 |
+| `dataChannel` | 认证数据通道；自动取 `appContext`，校验包名一致且非 system_server，receiver 由 runtime 管理。 |
+| `prefs` / `prefs()` | 默认远程偏好组 `"default"`；`prefs(group)` 指定命名组。需要框架 `REMOTE_PREFERENCES` 能力。 |
+
+`systemContext` 依赖 `ActivityThread.currentActivityThread()`/`getSystemContext()` 隐藏 API（与 YukiHookAPI 相同机制）。该路径受 Android 隐藏 API 限制影响，属于框架授予的受控例外，仅限 system_server；解析失败会显式抛出并携带底层原因，不会静默回退到其它 Context。
+
 ## 发布
 
 ### 本地 Maven 验证

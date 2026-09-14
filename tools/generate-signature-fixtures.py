@@ -143,11 +143,22 @@ java('android.content.Context', f'''public class Context {{
  public Intent registerReceiver(BroadcastReceiver r,IntentFilter filter,int flags) {{ {T} }}
  public void unregisterReceiver(BroadcastReceiver r) {{ {T} }} public void sendBroadcast(Intent intent) {{ {T} }}
 }}''')
-java('android.content.pm.ApplicationInfo', 'public class ApplicationInfo { public String packageName; public String processName; public int uid; }')
+java('android.content.pm.ApplicationInfo', '''public class ApplicationInfo {
+ public String packageName; public String processName; public String sourceDir; public int uid;
+ public ApplicationInfo() {}
+ public ApplicationInfo(ApplicationInfo s) { packageName=s.packageName; processName=s.processName; sourceDir=s.sourceDir; uid=s.uid; } }''')
 java('android.content.pm.ProviderInfo', 'public class ProviderInfo {}')
 java('android.content.pm.PackageManager', 'public class PackageManager { public static class NameNotFoundException extends Exception {} }')
-java('android.os.Process', f'public class Process {{ public static int myUid() {{ {T} }} }}')
-java('android.os.Build', 'public class Build { public static class VERSION { public static int SDK_INT=37; } }')
+java('android.os.Process', f'''public class Process {{ public static int myUid() {{ {T} }}
+ public static UserHandle myUserHandle() {{ {T} }} }}''')
+java('android.os.UserHandle', f'''public class UserHandle {{
+ public static void writeToParcel(UserHandle handle,Parcel parcel) {{ {T} }} }}''')
+java('android.os.Parcel', f'''public class Parcel {{ public static Parcel obtain() {{ {T} }}
+ public void setDataPosition(int position) {{ {T} }} public int readInt() {{ {T} }} public void recycle() {{ {T} }} }}''')
+java('android.os.Build', 'public class Build { public static class VERSION { public static int SDK_INT=37; } public static class VERSION_CODES { public static final int Q=29; } }')
+java('androidx.annotation.RequiresApi', '''import java.lang.annotation.*;
+@Retention(RetentionPolicy.CLASS) @Target({ElementType.METHOD,ElementType.CONSTRUCTOR,ElementType.TYPE,ElementType.FIELD})
+public @interface RequiresApi { int value() default 1; int api() default 1; }''')
 java('android.os.Handler', f'''public class Handler {{
  public Handler(Looper looper) {{ {T} }} public boolean post(Runnable r) {{ {T} }}
  public boolean postDelayed(Runnable r,long delay) {{ {T} }} public void removeCallbacks(Runnable r) {{ {T} }} }}''')

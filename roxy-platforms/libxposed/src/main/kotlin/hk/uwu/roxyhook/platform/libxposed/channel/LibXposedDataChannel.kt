@@ -3,6 +3,7 @@ package hk.uwu.roxyhook.platform.libxposed.channel
 import android.content.Context
 import hk.uwu.roxyhook.PackageScope
 import hk.uwu.roxyhook.android.channel.DataChannel
+import hk.uwu.roxyhook.android.lifecycle.appContext
 import hk.uwu.roxyhook.channel.ChannelAuthenticator
 import hk.uwu.roxyhook.platform.libxposed.service.LibXposedService
 
@@ -39,3 +40,13 @@ fun PackageScope.dataChannel(context: Context): DataChannel {
         }
     } finally { key.fill(0) }
 }
+/**
+ * HOOKED APP: ambient [DataChannel] resolved against this scope's attached [appContext].
+ * The app must have attached (use inside `onAttach`/`onCreate` or later); in system_server or
+ * before attach this fails fast instead of falling back to another context. The runtime still
+ * owns the returned receiver. Use `dataChannel(context)` when an explicit host context is needed.
+ */
+val PackageScope.dataChannel: DataChannel
+    get() = dataChannel(checkNotNull(appContext) {
+        "DataChannel needs the attached application context; read it inside a lifecycle callback"
+    })

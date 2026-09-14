@@ -11,8 +11,8 @@ fi
 if [[ ! -d "$ROOT/build/codegen-check/generated" ]]; then "$ROOT/tools/check-codegen.sh"; fi
 mkdir -p "$OUT/java"
 python3 "$ROOT/tools/generate-signature-fixtures.py" "$OUT/fixtures"
-find "$OUT/fixtures" -name '*.java' | sort > "$OUT/java-sources.txt"
-javac --release 17 -d "$OUT/java" @"$OUT/java-sources.txt"
+mapfile -t JAVA_SOURCES < <(find "$OUT/fixtures" -name '*.java' | sort)
+javac --release 17 -d "$OUT/java" "${JAVA_SOURCES[@]}"
 CP="$CORE/roxy-core.jar:$CORE/kava-signatures.jar:$OUT/java"
 mapfile -t ANDROID < <(find "$ROOT/roxy-android/src/main/kotlin" -name '*.kt' | sort)
 kotlinc -jvm-target 17 -classpath "$CP" "${ANDROID[@]}" -d "$OUT/android.jar"
@@ -20,7 +20,7 @@ echo 'PASS  Android layer, separately compiled against handwritten signatures'
 mapfile -t PLATFORM < <(find "$ROOT/roxy-platforms/libxposed/src/main/kotlin" -name '*.kt' | sort)
 kotlinc -jvm-target 17 -classpath "$CP:$OUT/android.jar" "${PLATFORM[@]}" -d "$OUT/libxposed.jar"
 echo 'PASS  LibXposed + integrated service layer, separately compiled against handwritten signatures'
-mapfile -t SAMPLES < <(find "$ROOT/samples" -name '*.kt' | sort)
+mapfile -t SAMPLES < <(find "$ROOT/samples" -name '*.kt' -not -path '*/build/*' | sort)
 mapfile -t GENERATED < <(find "$ROOT/build/codegen-check/generated" -name '*.kt' | sort)
 kotlinc -jvm-target 17 -classpath "$CP:$OUT/android.jar:$OUT/libxposed.jar" "${SAMPLES[@]}" "${GENERATED[@]}" -d "$OUT/samples.jar"
 echo 'PASS  Both sample sources AND the actual processor-rendered native entry compile together'
