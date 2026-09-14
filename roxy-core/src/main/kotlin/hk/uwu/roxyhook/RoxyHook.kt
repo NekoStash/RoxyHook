@@ -18,7 +18,8 @@ object RoxyHook {
         runtimes.removeAll { it.get() == null || it.get() === runtime }
         Unit
     }
-    private fun injected(): RoxyRuntime? = synchronized(lock) {
+    /** Latest registered open runtime bound to an injected framework; used by status and RLog routing. */
+    internal fun injected(): RoxyRuntime? = synchronized(lock) {
         runtimes.mapNotNull { it.get() }.lastOrNull { !it.isClosed && it.platform.info.isInjected }
     }
     /** Injected-process status only; use RoxyServices in the module's own UI process. */

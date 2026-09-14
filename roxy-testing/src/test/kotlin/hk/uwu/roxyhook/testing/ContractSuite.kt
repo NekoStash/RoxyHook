@@ -4,7 +4,9 @@ import hk.uwu.roxyhook.*
 import hk.uwu.roxyhook.platform.*
 import hk.uwu.roxyhook.prefs.*
 import hk.uwu.roxyhook.reflect.*
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.PrintStream
 import java.lang.reflect.Method
 import java.util.concurrent.Callable
 import java.util.concurrent.CountDownLatch
@@ -379,6 +381,52 @@ object ContractSuite {
             r.hook(integer) { id = "shared"; replaceTo(2) }
             equal(2, r.hookCount); equal("one", p.invoke(greet, f, "x")); equal(2, p.invoke(integer, f, 1))
         } }
+        test("RLog routes level and throwable identity to the injected platform logger") {
+            data class Entry(val level: LogLevel, val message: String, val error: Throwable?)
+            val entries = mutableListOf<Entry>()
+            val platform = object : HookPlatform by ReflectionPlatform() {
+                override val info = PlatformInfo("fixture injection", "1", 102, isInjected = true)
+                override val logger = RoxyLogger { level, message, error -> entries += Entry(level, message, error) }
+            }
+            RoxyRuntime(platform).use {
+                val failure = IllegalStateException("boom")
+                RLog.debug("d"); RLog.info("i"); RLog.warn("w"); RLog.error("e", failure)
+                equal(listOf(LogLevel.DEBUG, LogLevel.INFO, LogLevel.WARN, LogLevel.ERROR), entries.map { it.level })
+                equal(listOf("d", "i", "w", "e"), entries.map { it.message })
+                check(entries[3].error === failure); equal(null, entries[0].error)
+            }
+        }
+        test("RLog never sinks through a closed runtime") {
+            val entries = mutableListOf<String>()
+            val platform = object : HookPlatform by ReflectionPlatform() {
+                override val info = PlatformInfo("fixture injection", "1", 102, isInjected = true)
+                override val logger = RoxyLogger { _, message, _ -> entries += message }
+            }
+            val runtime = RoxyRuntime(platform)
+            runtime.close(); check(entries.isEmpty())
+        }
+        test("PackageScope.log keeps its prefix on the RLog dispatch path") {
+            val entries = mutableListOf<Pair<LogLevel, String>>()
+            val platform = object : HookPlatform by ReflectionPlatform() {
+                override val info = PlatformInfo("fixture injection", "1", 102, isInjected = true)
+                override val logger = RoxyLogger { level, message, _ -> entries += level to message }
+            }
+            RoxyRuntime(platform).use { r ->
+                r.scope().log("hello", LogLevel.WARN)
+                equal(listOf(LogLevel.WARN to "[demo.app/demo.app] hello"), entries)
+            }
+            entries.clear(); RLog.info("after close")
+            check(entries.isEmpty()) // Closed runtime must not receive scope or facade messages.
+        }
+        test("RLog falls back to STDERR without an injected runtime") {
+            val buffer = ByteArrayOutputStream()
+            val original = System.err
+            try {
+                System.setErr(PrintStream(buffer))
+                RLog.error("fallback message")
+            } finally { System.setErr(original) }
+            check(buffer.toString().contains("[RoxyHook/ERROR] fallback message"))
+        }
         val failures = results.count { it.second != null }
         val report = System.getProperty("roxy.report", "build/reports/roxy-contracts.xml")
         File(report).apply { parentFile?.mkdirs(); writeText(xml()) }

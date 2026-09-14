@@ -78,7 +78,8 @@ class PackageScope internal constructor(val runtime: RoxyRuntime, val context: P
         runtime.platform.requireCapability(Capability.REMOTE_PREFERENCES)
         return runtime.platform.preferences(group)
     }
+    /** Prefix the package/process pair, then dispatch through RLog so a closed runtime never sinks messages. */
     fun log(message: String, level: LogLevel = LogLevel.INFO, error: Throwable? = null) =
-        runtime.platform.logger.log(level, "[$packageName/$processName] $message", error)
+        RLog.log(level, "[$packageName/$processName] $message", error)
 }
 

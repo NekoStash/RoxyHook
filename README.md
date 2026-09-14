@@ -128,6 +128,17 @@ roxy {
 
 插件会为 Android application 模块接入 RoxyHook 平台、KSP 处理器、LibXposed API 和每个变体的元数据。入口使用 `@RoxyEntry` 标注继承 `RoxyModule` 的顶层类型。
 
+### 日志
+
+`roxy-core` 提供 `hk.uwu.roxyhook.RLog` 门面，模块代码可在任意位置直接调用，无需持有运行时或平台引用：
+
+```kotlin
+RLog.info("module loaded")
+RLog.error("hook failed", throwable)
+```
+
+路由规则：每次调用从当前打开的注入运行时（`platform.info.isInjected`）取得平台 logger，因此注入场景下消息进入框架日志；无活动注入运行时（模块自身进程、运行时已关闭、纯 JVM 测试）时回退到 `RoxyLogger.STDERR`，不会静默丢弃。`PackageScope.log` 走同一派发路径并自动附加 `[包名/进程名]` 前缀。RLog 仅弱引用运行时快照，不会产生全局强引用。
+
 ## 发布
 
 ### 本地 Maven 验证
