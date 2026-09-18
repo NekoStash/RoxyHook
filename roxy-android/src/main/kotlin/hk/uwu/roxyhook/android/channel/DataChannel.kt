@@ -4,13 +4,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import hk.uwu.roxyhook.channel.ChannelAuthenticator
 import hk.uwu.roxyhook.channel.ChannelPacket
-import hk.uwu.roxyhook.channel.ReplayWindow
 import hk.uwu.roxyhook.platform.LogLevel
 import hk.uwu.roxyhook.platform.RoxyLogger
 import hk.uwu.roxyhook.prefs.Subscription
@@ -19,15 +16,14 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** Live, same-user cross-process broadcasts. No persistence, wakeup or exactly-once delivery guarantee.
- * Every app holding the shared secret is trusted equally. Do not send confidential data or authorization tokens.
+ * Broadcast routing is package-scoped but unauthenticated; do not send confidential data or authorization tokens.
  * Receive handlers run on the Android main thread; send off large parsing/work to your executor. */
-class DataChannel(context: Context, val modulePackage: String, secret: ByteArray,
+class DataChannel(
+    context: Context, val modulePackage: String,
                   private val logger: RoxyLogger? = null) : AutoCloseable {
     private val context = context.applicationContext ?: context
     private val localPackage = context.packageName
     private val action = "$modulePackage.ROXY_DATA_V1"
-    private val authenticator = ChannelAuthenticator(secret)
-    private val replay = ReplayWindow()
     private val closed = AtomicBoolean()
     private val lock = Any()
     private val pending = PendingRequests(Handler(Looper.getMainLooper()))
@@ -36,12 +32,8 @@ class DataChannel(context: Context, val modulePackage: String, secret: ByteArray
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (closed.get() || intent.action != action) return
-            // The only deserialized extra is a bounded primitive array, never a module Parcelable.
-            val packet = try {
-                val bytes = intent.getByteArrayExtra(EXTRA) ?: return
-                authenticator.decode(bytes)
-            } catch (error: Exception) { return } // Do not amplify forged broadcasts into log spam.
-            if (packet.module != modulePackage || packet.target != localPackage || !replay.accept(packet)) return
+            val packet = decode(intent) ?: return
+            if (packet.module != modulePackage || packet.target != localPackage) return
             if (packet.replyTo.isNotEmpty()) { pending.complete(packet); return }
             val message = ChannelMessage(packet, this@DataChannel)
             listeners.forEach { listener ->
@@ -59,25 +51,34 @@ class DataChannel(context: Context, val modulePackage: String, secret: ByteArray
         // Validate routing even if no message is ever sent.
         ChannelPacket(modulePackage, localPackage, localPackage, "validation", payload = byteArrayOf())
         try {
-            // minSdk 26 already exposes the flags overload. The authenticated channel intentionally
-            // accepts broadcasts from other packages that share its secret, so it must be exported.
+            // minSdk 26 already exposes the flags overload. The channel accepts broadcasts from
+            // other packages that target this module package, so it must be exported.
             this.context.registerReceiver(receiver, IntentFilter(action), Context.RECEIVER_EXPORTED)
-        } catch (error: Throwable) { authenticator.close(); pending.close(); throw error }
+        } catch (error: Throwable) {
+            pending.close(); throw error
+        }
     }
-    fun on(topic: String, callback: (ChannelMessage) -> Unit): Subscription = synchronized(lock) {
+
+    fun receive(topic: String, callback: (ChannelMessage) -> Unit): Subscription =
+        synchronized(lock) {
         check(!closed.get())
         ChannelPacket(modulePackage, localPackage, localPackage, topic, payload = byteArrayOf())
         val listener = Listener(topic, callback)
         listeners += listener
         Subscription.once { listener.active.set(false); listeners -= listener }
     }
-    fun send(targetPackage: String, topic: String, payload: ByteArray): String {
+
+    fun put(targetPackage: String, topic: String, payload: ByteArray = byteArrayOf()): String {
         val packet = ChannelPacket(modulePackage, localPackage, targetPackage, topic, payload = payload)
         transmit(packet)
         return packet.id
     }
-    fun send(targetPackage: String, topic: String, text: String): String = send(targetPackage, topic, text.toByteArray(Charsets.UTF_8))
-    fun request(targetPackage: String, topic: String, payload: ByteArray = byteArrayOf(),
+
+    fun put(targetPackage: String, topic: String, text: String): String =
+        put(targetPackage, topic, text.toByteArray(Charsets.UTF_8))
+
+    fun waitFor(
+        targetPackage: String, topic: String, payload: ByteArray = byteArrayOf(),
                 timeoutMillis: Long = 5_000): CompletableFuture<ChannelPacket> {
         val packet = ChannelPacket(modulePackage, localPackage, targetPackage, topic, payload = payload)
         val future = pending.register(packet, timeoutMillis)
@@ -92,16 +93,59 @@ class DataChannel(context: Context, val modulePackage: String, secret: ByteArray
     }
     private fun transmit(packet: ChannelPacket) = synchronized(lock) {
         check(!closed.get())
-        val wire = authenticator.encode(packet)
-        context.sendBroadcast(Intent(action).setPackage(packet.target).putExtra(EXTRA, wire))
+        val intent = Intent(action).apply {
+            setPackage(packet.target)
+            putExtra(EXTRA_MODULE, packet.module)
+            putExtra(EXTRA_SENDER, packet.sender)
+            putExtra(EXTRA_TARGET, packet.target)
+            putExtra(EXTRA_TOPIC, packet.topic)
+            putExtra(EXTRA_ID, packet.id)
+            putExtra(EXTRA_REPLY_TO, packet.replyTo)
+            putExtra(EXTRA_TIMESTAMP, packet.timestampMillis)
+            putExtra(EXTRA_PAYLOAD, packet.payload)
+        }
+        context.sendBroadcast(intent)
     }
     override fun close() {
         synchronized(lock) {
             if (!closed.compareAndSet(false, true)) return
             listeners.forEach { it.active.set(false) }; listeners.clear()
         }
-        try { context.unregisterReceiver(receiver) }
-        finally { pending.close(); replay.clear(); authenticator.close() }
+        try { context.unregisterReceiver(receiver) } finally {
+            pending.close()
+        }
+    }
+
+    private fun decode(intent: Intent): ChannelPacket? {
+        return try {
+            val module = intent.getStringExtra(EXTRA_MODULE) ?: return null
+            val sender = intent.getStringExtra(EXTRA_SENDER) ?: return null
+            val target = intent.getStringExtra(EXTRA_TARGET) ?: return null
+            val topic = intent.getStringExtra(EXTRA_TOPIC) ?: return null
+            val id = intent.getStringExtra(EXTRA_ID) ?: return null
+            ChannelPacket(
+                module = module,
+                sender = sender,
+                target = target,
+                topic = topic,
+                id = id,
+                replyTo = intent.getStringExtra(EXTRA_REPLY_TO) ?: "",
+                timestampMillis = intent.getLongExtra(EXTRA_TIMESTAMP, 0L),
+                payload = intent.getByteArrayExtra(EXTRA_PAYLOAD) ?: byteArrayOf()
+            )
+        } catch (error: RuntimeException) {
+            reportDecodeError(error)
+            null
+        }
+    }
+
+    private fun reportDecodeError(error: Throwable) {
+        try {
+            logger?.log(LogLevel.DEBUG, "DataChannel dropped malformed packet", error)
+                ?: Log.d(TAG, "DataChannel dropped malformed packet", error)
+        } catch (logging: Throwable) {
+            Log.e(TAG, "DataChannel packet logging failed", logging)
+        }
     }
     /** Route a handler failure to the configured logger; if the logger itself throws, fall back to Log.e
      * so the original callback error stays observable instead of being masked or silently swallowed. */
@@ -115,7 +159,14 @@ class DataChannel(context: Context, val modulePackage: String, secret: ByteArray
         }
     }
     companion object {
-        private const val EXTRA = "hk.uwu.roxyhook.DATA_V1"
+        private const val EXTRA_MODULE = "hk.uwu.roxyhook.DATA_MODULE_V1"
+        private const val EXTRA_SENDER = "hk.uwu.roxyhook.DATA_SENDER_V1"
+        private const val EXTRA_TARGET = "hk.uwu.roxyhook.DATA_TARGET_V1"
+        private const val EXTRA_TOPIC = "hk.uwu.roxyhook.DATA_TOPIC_V1"
+        private const val EXTRA_ID = "hk.uwu.roxyhook.DATA_ID_V1"
+        private const val EXTRA_REPLY_TO = "hk.uwu.roxyhook.DATA_REPLY_TO_V1"
+        private const val EXTRA_TIMESTAMP = "hk.uwu.roxyhook.DATA_TIMESTAMP_V1"
+        private const val EXTRA_PAYLOAD = "hk.uwu.roxyhook.DATA_PAYLOAD_V1"
         private const val TAG = "RoxyDataChannel"
     }
 }
