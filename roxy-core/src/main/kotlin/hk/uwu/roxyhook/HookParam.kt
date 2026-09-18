@@ -1,6 +1,7 @@
 package hk.uwu.roxyhook
 
-import hk.uwu.roxyhook.platform.*
+import hk.uwu.roxyhook.platform.Capability
+import hk.uwu.roxyhook.platform.HookPlatform
 import hk.uwu.roxyhook.reflect.validateArguments
 import java.lang.reflect.Constructor
 import java.lang.reflect.Executable
@@ -8,7 +9,8 @@ import java.lang.reflect.Executable
 /** One invocation, never shared between threads or retained after the callback finishes. */
 class HookParam internal constructor(
     internal val call: ScopedCall,
-    private val platform: HookPlatform
+    private val platform: HookPlatform,
+    private val removeAction: () -> Unit
 ) {
     internal var phase = Phase.BEFORE
     internal var outcome: Outcome = Outcome.Pending
@@ -19,8 +21,11 @@ class HookParam internal constructor(
     val instance: Any? get() { call.checkActive(); return call.receiver }
     val thisObject: Any? get() = instance
     val args: Array<Any?> get() { call.checkActive(); return argumentValues }
-    /** Values shared between before/after for this invocation only. */
-    val extras: MutableMap<String, Any?> = mutableMapOf()
+
+    /** Values shared between before/after for this invocation only. Created on first use. */
+    private var extraValues: MutableMap<String, Any?>? = null
+    val extras: MutableMap<String, Any?>
+        get() = extraValues ?: mutableMapOf<String, Any?>().also { extraValues = it }
 
     var result: Any?
         get() { call.checkActive(); return (outcome as? Outcome.Returned)?.value }
@@ -58,6 +63,15 @@ class HookParam internal constructor(
             lastOriginalOutcome = Outcome.Thrown(error)
             throw error
         }
+    }
+
+    /** Invoke the exact original executable and cast its result to the requested type. */
+    inline fun <reified T> invokeOriginal(vararg arguments: Any?): T = callOriginal(*arguments) as T
+
+    /** Remove this hook registration while the current callback is running. */
+    fun removeSelf() {
+        call.checkActive()
+        removeAction()
     }
     internal fun restoreArguments(values: Array<Any?>) { argumentValues = values }
 }

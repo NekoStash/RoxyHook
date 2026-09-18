@@ -19,6 +19,7 @@ val AnyType: Class<Any> get() = Any::class.java
 /** Wildcard for a single parameter; unlike AnyType it is not java.lang.Object. */
 data object VagueType
 
+@PublishedApi
 internal fun resolveType(type: Any, loader: ClassLoader): Class<*> = when (type) {
     is Class<*> -> type
     is KClass<*> -> type.java
@@ -27,6 +28,27 @@ internal fun resolveType(type: Any, loader: ClassLoader): Class<*> = when (type)
     } else Class.forName(type, false, loader)
     else -> throw IllegalArgumentException("Expected Class, KClass or class-name String, got $type")
 }
+
+/** Resolve a class lazily without initializing it until the returned value is first read. */
+fun ClassLoader.lazyClass(name: String): Lazy<Class<*>> =
+    lazy(LazyThreadSafetyMode.PUBLICATION) { resolveType(name, this@lazyClass) }
+
+/** Resolve a class lazily and fail if it is not assignable to the requested reified type. */
+inline fun <reified T : Any> ClassLoader.lazyClassOf(name: String): Lazy<Class<out T>> =
+    lazy(LazyThreadSafetyMode.PUBLICATION) {
+        resolveType(
+            name,
+            this@lazyClassOf
+        ).asSubclass(T::class.java)
+    }
+
+/** Resolve a named class and check its assignability without triggering class initialization. */
+inline fun <reified T : Any> ClassLoader.resolveClass(name: String): Class<out T> =
+    resolveType(name, this).asSubclass(T::class.java)
+
+/** Return a typed subclass view when [this] is assignable to [T], or null otherwise. */
+inline fun <reified T : Any> Class<*>.asSubclassOrNull(): Class<out T>? =
+    if (T::class.java.isAssignableFrom(this)) asSubclass(T::class.java) else null
 private val primitiveTypes = mapOf(
     "boolean" to BooleanType, "byte" to ByteType, "short" to ShortType, "char" to CharType,
     "int" to IntType, "long" to LongType, "float" to FloatType, "double" to DoubleType, "void" to UnitType

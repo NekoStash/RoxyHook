@@ -20,7 +20,17 @@ object RoxyHook {
     }
     /** Latest registered open runtime bound to an injected framework; used by status and RLog routing. */
     internal fun injected(): RoxyRuntime? = synchronized(lock) {
-        runtimes.mapNotNull { it.get() }.lastOrNull { !it.isClosed && it.platform.info.isInjected }
+        var latest: RoxyRuntime? = null
+        val iterator = runtimes.iterator()
+        while (iterator.hasNext()) {
+            val runtime = iterator.next().get()
+            if (runtime == null) {
+                iterator.remove()
+            } else if (!runtime.isClosed && runtime.platform.info.isInjected) {
+                latest = runtime
+            }
+        }
+        latest
     }
     /** Injected-process status only; use RoxyServices in the module's own UI process. */
     val isActive: Boolean get() = injected() != null

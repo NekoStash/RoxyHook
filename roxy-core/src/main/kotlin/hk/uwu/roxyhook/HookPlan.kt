@@ -1,6 +1,9 @@
 package hk.uwu.roxyhook
 
-import hk.uwu.roxyhook.platform.*
+import hk.uwu.roxyhook.platform.HookInterceptor
+import hk.uwu.roxyhook.platform.HookOptions
+import hk.uwu.roxyhook.platform.HookPlatform
+import hk.uwu.roxyhook.platform.LogLevel
 import hk.uwu.roxyhook.reflect.validateArguments
 import hk.uwu.roxyhook.reflect.validateResult
 import java.lang.reflect.Constructor
@@ -19,9 +22,10 @@ internal data class HookPlan(
     fun checkMember(member: Executable) {
         require(member !is Constructor<*> || replacement == null) { "Constructor replacement is not supported" }
     }
-    fun interceptor(platform: HookPlatform): HookInterceptor = HookInterceptor { raw ->
+    fun interceptor(platform: HookPlatform, removeSelf: () -> Unit): HookInterceptor =
+        HookInterceptor { raw ->
         val call = ScopedCall(raw)
-        val param = HookParam(call, platform)
+            val param = HookParam(call, platform, removeSelf)
         try {
             param.phase = if (replacement == null) Phase.BEFORE else Phase.REPLACE
             before?.let { invokeProtected(param, platform, it) }
@@ -42,9 +46,12 @@ internal data class HookPlan(
     }
 
     internal fun invokeProtected(param: HookParam, platform: HookPlatform, callback: HookParam.() -> Unit) {
-        val savedOutcome = param.outcome
-        val savedArguments = param.args.copyOf()
-        val callsBefore = param.originalCalls
+        // Propagation never executes the recovery path below, so do not snapshot mutable
+        // invocation state when the caller explicitly asks callback failures to escape.
+        val recover = policy != CallbackErrorPolicy.PROPAGATE
+        val savedOutcome = if (recover) param.outcome else null
+        val savedArguments = if (recover) param.args.copyOf() else null
+        val callsBefore = if (recover) param.originalCalls else 0
         try {
             callback(param)
             if (param.phase != Phase.AFTER) validateArguments(param.member, param.args)
@@ -57,10 +64,10 @@ internal data class HookPlan(
                 if (observerError !== error) error.addSuppressed(observerError)
             }
             if (policy == CallbackErrorPolicy.PROPAGATE) throw error
-            param.restoreArguments(savedArguments)
+            param.restoreArguments(checkNotNull(savedArguments))
             // Never replay a side-effecting original call after a failed replacement/before callback.
             param.outcome = if (savedOutcome === Outcome.Pending && param.originalCalls > callsBefore)
-                param.lastOriginalOutcome else savedOutcome
+                param.lastOriginalOutcome else checkNotNull(savedOutcome)
             try { platform.logger.log(LogLevel.ERROR, "Hook callback failed: ${param.member}", error) }
             catch (loggingError: Throwable) { rethrowFatal(loggingError) }
         }

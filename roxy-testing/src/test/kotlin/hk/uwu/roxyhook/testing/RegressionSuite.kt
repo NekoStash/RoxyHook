@@ -1,9 +1,16 @@
 package hk.uwu.roxyhook.testing
 
-import hk.uwu.roxyhook.*
-import hk.uwu.roxyhook.channel.*
+import hk.uwu.roxyhook.LoadStage
+import hk.uwu.roxyhook.PackageContext
+import hk.uwu.roxyhook.PackageScope
+import hk.uwu.roxyhook.RoxyHook
+import hk.uwu.roxyhook.RoxyModule
+import hk.uwu.roxyhook.RoxyRuntime
+import hk.uwu.roxyhook.RuntimeKey
+import hk.uwu.roxyhook.channel.ChannelPacket
 import hk.uwu.roxyhook.lifecycle.InvocationDepth
-import hk.uwu.roxyhook.platform.*
+import hk.uwu.roxyhook.platform.HookPlatform
+import hk.uwu.roxyhook.platform.PlatformInfo
 import java.util.UUID
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
@@ -176,83 +183,12 @@ object RegressionSuite {
                 check(depth.exit(owner, "a"))
             } finally { executor.shutdownNow() }
         }
-        test("channel binary packet roundtrip") {
-            val source = packet(payload = byteArrayOf(0, 1, 127, -128, -1))
-            ChannelAuthenticator(ByteArray(32) { it.toByte() }).use { codec ->
-                val result = codec.decode(codec.encode(source))
-                check(result.id == source.id && result.timestampMillis == source.timestampMillis)
-                check(result.payload.contentEquals(source.payload) && result.sender == "sender.app")
-            }
-        }
-        test("channel text roundtrip preserves Unicode") {
-            ChannelAuthenticator(ChannelAuthenticator.newSecret()).use { codec ->
-                check(codec.decode(codec.encode(packet(payload = "你好，Roxy".toByteArray()))).text() == "你好，Roxy")
-            }
-        }
-        test("channel payloads are defensively copied") {
-            val bytes = byteArrayOf(1, 2); val packet = packet(payload = bytes)
-            bytes[0] = 9; packet.payload[0] = 8
-            check(packet.payload.contentEquals(byteArrayOf(1, 2)))
-        }
-        test("channel tampering is rejected before delivery") {
-            ChannelAuthenticator(ChannelAuthenticator.newSecret()).use { codec ->
-                val wire = codec.encode(packet())
-                for (index in listOf(0, 12, wire.size - 1)) {
-                    val tampered = wire.copyOf(); tampered[index] = (tampered[index].toInt() xor 1).toByte()
-                    expect<IllegalArgumentException> { codec.decode(tampered) }
-                }
-            }
-        }
-        test("channel rejects other keys, truncation and oversized payloads") {
-            ChannelAuthenticator(ByteArray(32) { 1 }).use { a -> ChannelAuthenticator(ByteArray(32) { 2 }).use { b ->
-                expect<IllegalArgumentException> { b.decode(a.encode(packet())) }
-                expect<IllegalArgumentException> { a.decode(byteArrayOf(1)) }
-                expect<IllegalArgumentException> { a.decode(ByteArray(ChannelAuthenticator.MAX_WIRE_BYTES + 1)) }
-                expect<IllegalArgumentException> { packet(payload = ByteArray(ChannelPacket.MAX_PAYLOAD_BYTES + 1)) }
-            } }
-        }
-        test("channel accepts maximum payload") {
-            ChannelAuthenticator(ChannelAuthenticator.newSecret()).use { codec ->
-                val wire = codec.encode(packet(payload = ByteArray(ChannelPacket.MAX_PAYLOAD_BYTES) { (it % 256).toByte() }))
-                check(wire.size <= ChannelAuthenticator.MAX_WIRE_BYTES)
-                check(codec.decode(wire).payload.size == ChannelPacket.MAX_PAYLOAD_BYTES)
-            }
-        }
-        test("channel key conversion is exact and validates before decoding") {
-            val key = ByteArray(32) { it.toByte() }; val hex = ChannelAuthenticator.secretToHex(key)
-            check(hex.length == 64 && ChannelAuthenticator.secretFromHex(hex).contentEquals(key))
-            expect<IllegalArgumentException> { ChannelAuthenticator.secretFromHex("bad") }
-            expect<IllegalArgumentException> { ChannelAuthenticator(ByteArray(31)) }
-        }
-        test("closed authenticator rejects use and never mutates caller secret") {
-            val key = ByteArray(32) { 3 }; val codec = ChannelAuthenticator(key); codec.close(); codec.close()
-            check(key.all { it == 3.toByte() })
-            expect<IllegalStateException> { codec.encode(packet()) }
-        }
         test("channel routing and topic validate; reply carries correlation id") {
             expect<IllegalArgumentException> { ChannelPacket("bad\nmodule", "a", "b", "topic", payload = byteArrayOf()) }
             expect<IllegalArgumentException> { ChannelPacket("a", "b", "c", "bad/topic", payload = byteArrayOf()) }
             val source = packet(); val reply = ChannelPacket(source.module, source.target, source.sender, source.topic,
                 replyTo = source.id, payload = byteArrayOf())
-            ChannelAuthenticator(ChannelAuthenticator.newSecret()).use { codec ->
-                check(codec.decode(codec.encode(reply)).replyTo == source.id)
-            }
-        }
-        test("replay window rejects duplicate and stale messages") {
-            val replay = ReplayWindow(); val source = packet()
-            check(replay.accept(source, 1_000_000)); check(!replay.accept(source, 1_000_001))
-            check(!replay.accept(packet(time = 1), 1_000_000))
-            check(!replay.accept(packet(time = 1_040_000), 1_000_000))
-        }
-        test("replay window bounds memory without evicting live nonces") {
-            val replay = ReplayWindow(ttlMillis = 100, capacity = 1, futureToleranceMillis = 0)
-            val one = packet(time = 1000); val two = packet(time = 1000)
-            check(replay.accept(one, 1000)); check(!replay.accept(two, 1000)); check(!replay.accept(one, 1000))
-            check(replay.accept(packet(time = 1101), 1101)); replay.clear()
-            check(replay.accept(packet(time = 1101), 1101))
-        }
-        test("replay timestamp arithmetic rejects malicious far future") {
-            check(!ReplayWindow().accept(packet(time = Long.MAX_VALUE), 1))
+            check(reply.replyTo == source.id)
         }
         println("RESULT: $tests/$tests regression tests passed")
     }

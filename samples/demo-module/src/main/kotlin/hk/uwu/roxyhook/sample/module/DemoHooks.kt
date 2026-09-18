@@ -45,12 +45,8 @@ object DemoHooks : RoxyHooker() {
                 log("Application attached: ${application.javaClass.name} appInfo.uid=${appInfo?.uid}")
                 // Ambient module resources use the attached application context automatically.
                 runCatching { log("Module label: ${moduleResources.context.packageName}") }
-                try {
-                    dataChannel.on("ping") { message -> message.reply("pong from $packageName/$processName") }
-                    log("Authenticated DataChannel is listening")
-                } catch (error: Exception) {
-                    log("DataChannel not provisioned yet. Use Initialize channel in the module app, then restart the target.", LogLevel.INFO)
-                }
+                dataChannel.receive("ping") { log("Received ping in $packageName/$processName") }
+                log("DataChannel is listening")
             }
             onCreate { log("Application.onCreate finished") }
             onActivityResume { log("Activity resumed: ${activity.javaClass.name}") }

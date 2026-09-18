@@ -1,8 +1,31 @@
 package hk.uwu.roxyhook
 
-import hk.uwu.roxyhook.platform.*
+import hk.uwu.roxyhook.platform.CallbackHookPlatform
+import hk.uwu.roxyhook.platform.Capability
+import hk.uwu.roxyhook.platform.HookCall
+import hk.uwu.roxyhook.platform.HookInterceptor
+import hk.uwu.roxyhook.platform.HookOptions
+import hk.uwu.roxyhook.platform.HookPlatform
+import hk.uwu.roxyhook.platform.PlatformHook
 import java.lang.reflect.Constructor
 import java.lang.reflect.Executable
+
+/** Binds a callback's self-removal action after native registration is tracked. */
+private class HookBinding {
+    private var handle: HookHandle? = null
+    private var removalRequested = false
+
+    @Synchronized
+    fun remove() {
+        handle?.let { it.unhook() } ?: run { removalRequested = true }
+    }
+
+    @Synchronized
+    fun bind(handle: HookHandle) {
+        this.handle = handle
+        if (removalRequested) handle.unhook()
+    }
+}
 
 /** Own one runtime per module generation. No process-global platform singleton. */
 class RoxyRuntime(val platform: HookPlatform, val config: RoxyConfig = RoxyConfig()) : AutoCloseable {
@@ -48,13 +71,15 @@ class RoxyRuntime(val platform: HookPlatform, val config: RoxyConfig = RoxyConfi
         platform.requireCapability(if (member is Constructor<*>) Capability.CONSTRUCTOR_HOOK else Capability.METHOD_HOOK)
         if (plan.options.id != null) platform.requireCapability(Capability.ATOMIC_REPLACEMENT)
         plan.checkMember(member)
+        val self = HookBinding()
+        val removeSelf = { self.remove() }
         val native = if (platform is CallbackHookPlatform)
-            platform.hookCallbacks(member, plan.options, plan.callbacks(platform))
+            platform.hookCallbacks(member, plan.options, plan.callbacks(platform, removeSelf))
         else {
             platform.requireCapability(Capability.INTERCEPTOR_CHAIN)
-            platform.hook(member, plan.options, plan.interceptor(platform))
+            platform.hook(member, plan.options, plan.interceptor(platform, removeSelf))
         }
-        track(native, plan.options)
+        track(native, plan.options).also { self.bind(it) }
     }
     /** Raw interceptors propagate failures. No implicit fallback or automatic call to proceed. */
     fun intercept(member: Executable, options: HookOptions = HookOptions(), block: HookCall.() -> Any?): HookHandle =
@@ -71,7 +96,15 @@ class RoxyRuntime(val platform: HookPlatform, val config: RoxyConfig = RoxyConfi
         platform.requireCapability(Capability.INTERCEPTOR_CHAIN)
         val plan = HookBuilder(config).apply(block).build()
         if (plan.options.id != null) platform.requireCapability(Capability.ATOMIC_REPLACEMENT)
-        track(platform.hookClassInitializer(type, plan.options, plan.interceptor(platform)), plan.options)
+        val self = HookBinding()
+        val removeSelf = { self.remove() }
+        track(
+            platform.hookClassInitializer(
+                type,
+                plan.options,
+                plan.interceptor(platform, removeSelf)
+            ), plan.options
+        ).also { self.bind(it) }
     }
     fun hookAll(members: Collection<Executable>, block: HookBuilder.() -> Unit): HookGroup {
         require(members.isNotEmpty()) { "No executables were selected" }

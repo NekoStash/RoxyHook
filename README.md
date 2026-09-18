@@ -8,17 +8,17 @@ RoxyHook 是面向 **LibXposed API 102** 的 Kotlin 封装与开发工具链。�
 
 ## 模块
 
-| 模块 | 用途 |
-| --- | --- |
-| `roxy-annotations` | `@RoxyEntry` 模块入口注解。 |
-| `roxy-core` | Hook DSL、运行时、作用域、偏好与平台抽象。 |
-| `roxy-android` | Android 生命周期、模块资源与认证数据通道。 |
-| `roxy-platforms:libxposed` | LibXposed API 102 平台适配、Service 与热重载接入。 |
-| `roxy-ksp` | KSP 符号处理器；生成 Xposed 入口和元数据。 |
-| `roxy-gradle-plugin` | 模块工程插件：自动依赖、元数据、R8 keep rules 和 APK 校验。 |
-| `roxy-testing` | 平台无关 Hook 行为的契约与回归测试。 |
-| `samples:demo-module` | 可编译的 LibXposed 模块 APK 示例。 |
-| `samples:demo-target` | 被 Hook 的目标应用示例。 |
+| 模块                         | 用途                                      |
+|----------------------------|-----------------------------------------|
+| `roxy-annotations`         | `@RoxyEntry` 模块入口注解。                    |
+| `roxy-core`                | Hook DSL、运行时、作用域、偏好与平台抽象。               |
+| `roxy-android`             | Android 生命周期、模块资源与跨进程数据通道。              |
+| `roxy-platforms:libxposed` | LibXposed API 102 平台适配、Service 与热重载接入。  |
+| `roxy-ksp`                 | KSP 符号处理器；生成 Xposed 入口和元数据。             |
+| `roxy-gradle-plugin`       | 模块工程插件：自动依赖、元数据、R8 keep rules 和 APK 校验。 |
+| `roxy-testing`             | 平台无关 Hook 行为的契约与回归测试。                   |
+| `samples:demo-module`      | 可编译的 LibXposed 模块 APK 示例。               |
+| `samples:demo-target`      | 被 Hook 的目标应用示例。                         |
 
 ## 环境要求
 
@@ -143,16 +143,16 @@ RLog.error("hook failed", throwable)
 
 `PackageScope` 统一暴露当次注入事件的常用上下文，减少每个 Hook 里重复保管的样板代码：
 
-| API | 语义 / 前置条件 |
-| --- | --- |
-| `mainProcessName` / `isMainProcess` / `processName` | 包声明的主进程名与当前进程名。 |
-| `appInfo` | 当次 package 事件的 `ApplicationInfo` 防御性快照；system_server 或无平台数据时为 `null`。 |
-| `application` / `appContext` / `appResources` | 宿主 Application attach 之后可用；attach 前为 `null`，system_server 中读取会失败。 |
-| `systemContext` | **仅 system_server**。经 `SystemContextResolver` 调用 `ActivityThread` 隐藏 API；失败抛出带原因的 `IllegalStateException`，无回退。 |
-| `moduleAppFile` | 模块自身 APK `File`（LibXposed `moduleApplicationInfo.sourceDir`）；平台未提供时失败。 |
-| `moduleResources` | 模块资源；app 进程用 `appContext`、system_server 用 `systemContext` 作宿主 Context，未就绪即失败。 |
-| `dataChannel` | 认证数据通道；自动取 `appContext`，校验包名一致且非 system_server，receiver 由 runtime 管理。 |
-| `prefs` / `prefs()` | 默认远程偏好组 `"default"`；`prefs(group)` 指定命名组。需要框架 `REMOTE_PREFERENCES` 能力。 |
+| API                                                 | 语义 / 前置条件                                                                                                                              |
+|-----------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------|
+| `mainProcessName` / `isMainProcess` / `processName` | 包声明的主进程名与当前进程名。                                                                                                                        |
+| `appInfo`                                           | 当次 package 事件的 `ApplicationInfo` 防御性快照；system_server 或无平台数据时为 `null`。                                                                  |
+| `application` / `appContext` / `appResources`       | 宿主 Application attach 之后可用；attach 前为 `null`，system_server 中读取会失败。                                                                      |
+| `systemContext`                                     | **仅 system_server**。经 `SystemContextResolver` 调用 `ActivityThread` 隐藏 API；失败抛出带原因的 `IllegalStateException`，无回退。                         |
+| `moduleAppFile`                                     | 模块自身 APK `File`（LibXposed `moduleApplicationInfo.sourceDir`）；平台未提供时失败。                                                                 |
+| `moduleResources`                                   | 模块资源；app 进程用 `appContext`、system_server 用 `systemContext` 作宿主 Context，未就绪即失败。                                                          |
+| `dataChannel`                                       | 跨进程数据通道；自动取 `appContext`，校验包名一致且非 system_server，receiver 由 runtime 管理。使用 `put` 发送、`receive` 注册监听、`waitFor` 请求回复；通道按包路由且不提供认证，请勿发送敏感数据。 |
+| `prefs` / `prefs()`                                 | 默认远程偏好组 `"default"`；`prefs(group)` 指定命名组。需要框架 `REMOTE_PREFERENCES` 能力。                                                                 |
 
 `systemContext` 依赖 `ActivityThread.currentActivityThread()`/`getSystemContext()` 隐藏 API（与 YukiHookAPI 相同机制）。该路径受 Android 隐藏 API 限制影响，属于框架授予的受控例外，仅限 system_server；解析失败会显式抛出并携带底层原因，不会静默回退到其它 Context。
 

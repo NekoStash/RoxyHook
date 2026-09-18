@@ -75,8 +75,8 @@ class RoxyGradlePlugin : Plugin<Project> {
                     it.dependsOn(kspTasks)
                     it.outputDirectory.set(layout.buildDirectory.dir("generated/roxy/${variant.name}/validated"))
                 }
-                // Adds the validation dependency to Java-resource packaging without copying KSP output twice.
-                resources.addGeneratedSourceDirectory(validation, ValidateRoxyEntryTask::outputDirectory)
+                // Validate before metadata generation; KSP's own resource source remains the packaged input.
+                metadata.configure { it.dependsOn(validation) }
             }
         }
         afterEvaluate {

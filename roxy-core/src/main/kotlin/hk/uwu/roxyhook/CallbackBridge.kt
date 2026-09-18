@@ -1,15 +1,21 @@
 package hk.uwu.roxyhook
 
-import hk.uwu.roxyhook.platform.*
+import hk.uwu.roxyhook.platform.CallbackCompletion
+import hk.uwu.roxyhook.platform.CallbackOutcome
+import hk.uwu.roxyhook.platform.CallbackSession
+import hk.uwu.roxyhook.platform.HookCall
+import hk.uwu.roxyhook.platform.HookPlatform
+import hk.uwu.roxyhook.platform.PlatformCallbacks
 import java.lang.reflect.Constructor
 import java.lang.reflect.Executable
 import java.lang.reflect.Method
 
 /** Same callback/error/outcome engine as the chain path, without an artificial proceed(). */
-internal fun HookPlan.callbacks(platform: HookPlatform): PlatformCallbacks = PlatformCallbacks { member, receiver, arguments ->
+internal fun HookPlan.callbacks(platform: HookPlatform, removeSelf: () -> Unit): PlatformCallbacks =
+    PlatformCallbacks { member, receiver, arguments ->
     val frame = CallbackFrame(member, receiver, arguments)
     val call = ScopedCall(frame)
-    val param = HookParam(call, platform)
+        val param = HookParam(call, platform, removeSelf)
     try {
         param.phase = if (replacement == null) Phase.BEFORE else Phase.REPLACE
         before?.let { invokeProtected(param, platform, it) }

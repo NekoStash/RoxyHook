@@ -1,19 +1,47 @@
 package hk.uwu.roxyhook.testing
 
-import hk.uwu.roxyhook.*
-import hk.uwu.roxyhook.platform.*
-import hk.uwu.roxyhook.prefs.*
-import hk.uwu.roxyhook.reflect.*
+import hk.uwu.roxyhook.CallbackErrorPolicy
+import hk.uwu.roxyhook.HookParam
+import hk.uwu.roxyhook.PackageContext
+import hk.uwu.roxyhook.PackageScope
+import hk.uwu.roxyhook.PlatformSnapshot
+import hk.uwu.roxyhook.RLog
+import hk.uwu.roxyhook.RoxyHook
+import hk.uwu.roxyhook.RoxyHooker
+import hk.uwu.roxyhook.RoxyRuntime
+import hk.uwu.roxyhook.platform.CallbackCompletion
+import hk.uwu.roxyhook.platform.CallbackOutcome
+import hk.uwu.roxyhook.platform.Capability
+import hk.uwu.roxyhook.platform.HookCall
+import hk.uwu.roxyhook.platform.HookOptions
+import hk.uwu.roxyhook.platform.HookPlatform
+import hk.uwu.roxyhook.platform.LogLevel
+import hk.uwu.roxyhook.platform.PlatformInfo
+import hk.uwu.roxyhook.platform.RoxyLogger
+import hk.uwu.roxyhook.platform.UnsupportedCapabilityException
+import hk.uwu.roxyhook.prefs.PreferenceKey
+import hk.uwu.roxyhook.prefs.Preferences
+import hk.uwu.roxyhook.prefs.Subscription
+import hk.uwu.roxyhook.prefs.stringPreference
+import hk.uwu.roxyhook.prefs.stringSetPreference
+import hk.uwu.roxyhook.reflect.AmbiguousMemberException
+import hk.uwu.roxyhook.reflect.IntType
+import hk.uwu.roxyhook.reflect.NoSuchMemberException
+import hk.uwu.roxyhook.reflect.StringType
+import hk.uwu.roxyhook.reflect.VagueType
+import hk.uwu.roxyhook.reflect.asSubclassOrNull
+import hk.uwu.roxyhook.reflect.lazyClass
+import hk.uwu.roxyhook.reflect.lazyClassOf
+import hk.uwu.roxyhook.reflect.resolveClass
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.PrintStream
-import java.lang.reflect.Method
+import java.lang.reflect.Modifier
 import java.util.concurrent.Callable
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 class Fixture {
@@ -32,6 +60,22 @@ class Fixture {
 }
 open class Parent { open fun inherited(): String = "parent" }
 class Child : Parent() { override fun inherited(): String = "child" }
+interface ParentContract {
+    fun parentContract(value: String): String
+}
+
+interface ChildContract : ParentContract {
+    fun childContract(): String
+}
+
+abstract class InterfaceFixture : ChildContract
+class ModifierFixture {
+    @JvmField
+    val publicField = "public"
+    private val privateField = "private"
+    fun publicMethod() = "public"
+    private fun privateMethod() = "private"
+}
 class NotInitialized { companion object { init { System.setProperty("roxy.test.initialized", "yes") } } }
 
 object ContractSuite {
@@ -140,6 +184,12 @@ object ContractSuite {
             r.hook(greet) { priority = 99; replaceAny { callOriginal() as String + "!" } }
             equal("Hello x!", p.invoke(greet, f, "x")); equal(1, f.calls)
         } }
+        test("generic invokeOriginal preserves exact original and supplied arguments") {
+            scenario { p, r, f ->
+                r.hook(greet) { replace { invokeOriginal<String>("Yuki") + "!" } }
+                equal("Hello Yuki!", p.invoke(greet, f, "ignored")); equal(1, f.calls)
+            }
+        }
         test("original invocation uses exact parent implementation") { scenario { p, _, _ ->
             val parent = Parent::class.java.getDeclaredMethod("inherited")
             equal("parent", p.invokeOriginal(parent, Child(), emptyArray()))
@@ -174,6 +224,25 @@ object ContractSuite {
             val handle = r.hook(greet) { replaceTo("hook") }
             handle.unhook(); handle.unhook(); equal(0, r.hookCount); equal("Hello x", p.invoke(greet, f, "x"))
         } }
+        test("remove aliases unhook") {
+            scenario { p, r, f ->
+                val handle = r.hook(greet) { replaceTo("hook") }
+                handle.remove(); handle.remove(); equal(0, r.hookCount); equal(
+                "Hello x",
+                p.invoke(greet, f, "x")
+            )
+            }
+        }
+        test("HookParam.removeSelf removes the current registration") {
+            scenario { p, r, f ->
+                val handle = r.hook(greet) { before { removeSelf() } }
+                equal("Hello first", p.invoke(greet, f, "first")); check(!handle.isActive); equal(
+                0,
+                r.hookCount
+            )
+                equal("Hello second", p.invoke(greet, f, "second")); equal(2, f.calls)
+            }
+        }
         test("native atomic handle replacement works") { scenario { p, r, f ->
             val handle = r.hook(greet) { id = "greeting"; replaceTo("old") }
             handle.replace { replaceTo("new") }; equal("new", p.invoke(greet, f, "x")); equal(1, p.registrationCount)
@@ -238,6 +307,49 @@ object ContractSuite {
         test("inherited search prefers nearest declaration") { scenario { _, r, _ -> with(r.scope()) {
             equal(Child::class.java, Child::class.java.method { name = "inherited"; superClass() }.single().declaringClass)
         } } }
+        test("interface search traverses inherited interfaces without changing default search") {
+            scenario { _, r, _ ->
+                with(r.scope()) {
+                    equal(
+                        null,
+                        InterfaceFixture::class.java.method {
+                            name = "parentContract"
+                        }.members.singleOrNull()
+                    )
+                    equal(ParentContract::class.java, InterfaceFixture::class.java.method {
+                        name = "parentContract"; interfaces(); param(StringType)
+                    }.single().declaringClass)
+                    equal(ChildContract::class.java, InterfaceFixture::class.java.method {
+                        name = "childContract"; allParents()
+                    }.single().declaringClass)
+                }
+            }
+        }
+        test("modifier filters apply to methods and fields") {
+            scenario { _, r, _ ->
+                with(r.scope()) {
+                    equal(ModifierFixture::class.java, ModifierFixture::class.java.method {
+                        name = "publicMethod"; requireModifier(Modifier.PUBLIC)
+                    }.single().declaringClass)
+                    throws<NoSuchMemberException> {
+                        ModifierFixture::class.java.method {
+                            name = "publicMethod"; requireModifier(Modifier.PRIVATE)
+                        }.single()
+                    }
+                    equal("privateMethod", ModifierFixture::class.java.method {
+                        requireModifier(Modifier.PRIVATE)
+                    }.single().name)
+                    equal("privateField", ModifierFixture::class.java.field {
+                        requireModifier(Modifier.PRIVATE)
+                    }.member.name)
+                    throws<NoSuchMemberException> {
+                        ModifierFixture::class.java.field {
+                            name = "privateField"; excludeModifier(Modifier.PRIVATE)
+                        }
+                    }
+                }
+            }
+        }
         test("field access and primitive array class resolution") { scenario { _, r, f -> with(r.scope()) {
             val access = Fixture::class.java.field { name = "fieldValue" }.of(f)
             access.set("after"); equal("after", access.cast<String>())
@@ -248,6 +360,25 @@ object ContractSuite {
             "hk.uwu.roxyhook.testing.NotInitialized".toClass()
             equal(null, System.getProperty("roxy.test.initialized"))
         } } }
+        test("typed and lazy class helpers preserve no-initialization lookup") {
+            scenario { _, r, _ ->
+                with(r.scope()) {
+                    val lazyType = loader.lazyClass("hk.uwu.roxyhook.testing.NotInitialized")
+                    check(!lazyType.isInitialized())
+                    equal(NotInitialized::class.java, lazyType.value)
+                    equal(
+                        NotInitialized::class.java,
+                        loader.resolveClass<NotInitialized>("hk.uwu.roxyhook.testing.NotInitialized")
+                    )
+                    equal(
+                        String::class.java,
+                        loader.lazyClassOf<CharSequence>("java.lang.String").value
+                    )
+                    equal(String::class.java, String::class.java.asSubclassOrNull<CharSequence>())
+                    equal(null, String::class.java.asSubclassOrNull<Number>())
+                }
+            }
+        }
         test("package and process filters are exact") { scenario { _, r, _ ->
             var invoked = 0
             with(r.scope(PackageContext("demo.app", "demo.app:worker", loader, false))) {
@@ -373,6 +504,15 @@ object ContractSuite {
             RoxyRuntime(p).use { r ->
                 r.hook(greet) { before { args[0] = "Roxy" }; after { result = "$result!" } }
                 equal("Hello Roxy!", p.invoke(greet, f, "x")); equal(1, f.calls)
+            }
+        }
+        test("native callback SPI supports HookParam.removeSelf") {
+            val p = CallbackReflectionPlatform();
+            val f = Fixture()
+            RoxyRuntime(p).use { r ->
+                val handle = r.hook(greet) { before { removeSelf() } }
+                equal("Hello first", p.invoke(greet, f, "first")); check(!handle.isActive)
+                equal("Hello second", p.invoke(greet, f, "second")); equal(2, f.calls)
             }
         }
         test("native callback SPI observes external native changes") {
