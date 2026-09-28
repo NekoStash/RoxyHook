@@ -1,5 +1,6 @@
 package hk.uwu.roxyhook.platform.libxposed
 
+import android.app.Application
 import android.content.pm.ApplicationInfo
 import android.os.Bundle
 import hk.uwu.roxyhook.LoadStage
@@ -22,6 +23,8 @@ import java.lang.reflect.Executable
 private class ReplayTarget {
     fun greet() = "hello"
 }
+
+private class ReplayApplication : Application()
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -125,6 +128,38 @@ class LibXposedPackageReplayTest {
                         assertEquals(false, scope.isFirstPackage)
                         assertEquals(10, scope.userId)
                     })
+        }
+    }
+
+    @Test
+    fun provesLoaderFromSavedApplicationClassName() {
+        val targetPackage = "com.xiaomi.subscreencenter"
+        val targetProcess = ProcessContext(targetPackage, false, "module.app", "/module.apk")
+        val info = ApplicationInfo().apply {
+            packageName = targetPackage
+            className = ReplayApplication::class.java.name
+        }
+        val old = LibXposedPackageReplay()
+        old.record(
+            PackageContext(
+                targetPackage,
+                targetProcess.processName,
+                loader,
+                platformSnapshot = ApplicationInfoSnapshot(info),
+            )
+        )
+        val preparing = Preparing()
+        assertEquals(true, old.prepare(preparing))
+
+        RoxyRuntime(ReflectionPlatform()).use { runtime ->
+            assertEquals(
+                1,
+                LibXposedPackageReplay().replay(
+                    runtime,
+                    targetProcess,
+                    Reloaded(preparing.saved, listOf(handle(target))),
+                ) { scope -> assertSame(loader, scope.appClassLoader) },
+            )
         }
     }
 

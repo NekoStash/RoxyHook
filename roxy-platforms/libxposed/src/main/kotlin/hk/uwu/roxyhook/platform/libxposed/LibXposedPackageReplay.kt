@@ -1,7 +1,12 @@
 package hk.uwu.roxyhook.platform.libxposed
 
+import android.app.Application
 import android.content.pm.ApplicationInfo
 import android.os.Bundle
+import com.highcapable.kavaref.extension.classOf
+import com.highcapable.kavaref.extension.isSubclassOf
+import com.highcapable.kavaref.extension.makeAccessible
+import com.highcapable.kavaref.extension.toClass
 import hk.uwu.roxyhook.LoadStage
 import hk.uwu.roxyhook.PackageContext
 import hk.uwu.roxyhook.PackageScope
@@ -9,6 +14,7 @@ import hk.uwu.roxyhook.ProcessContext
 import hk.uwu.roxyhook.RLog
 import hk.uwu.roxyhook.RoxyRuntime
 import hk.uwu.roxyhook.android.ApplicationInfoSnapshot
+import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModuleInterface.HotReloadedParam
 import io.github.libxposed.api.XposedModuleInterface.HotReloadingParam
 
@@ -18,9 +24,9 @@ import io.github.libxposed.api.XposedModuleInterface.HotReloadingParam
  * then [replay] in the new module to explicitly reinstall hooks. The saved Bundle contains only
  * Android framework values; neither old module objects nor old module ClassLoaders cross generations.
  *
- * A target ClassLoader can only be recovered when old hook handles identify it unambiguously.
- * Contexts without such a handle are skipped instead of guessing a loader. [namespace] allows a
- * module to preserve its existing Bundle keys when migrating to this helper.
+ * A target ClassLoader is recovered from the live Application of the same package, or proven
+ * against old hook handles. Unproven contexts are skipped instead of guessing a loader.
+ * [namespace] allows a module to preserve its existing Bundle keys when migrating to this helper.
  */
 class LibXposedPackageReplay(private val namespace: String = "roxyhook.reload.") {
     init {
@@ -65,19 +71,14 @@ class LibXposedPackageReplay(private val namespace: String = "roxyhook.reload.")
             RLog.warn("Package replay has no compatible saved state")
             return 0
         }
-        val candidates = LinkedHashMap<ClassLoader, MutableList<Class<*>>>()
-        param.oldHookHandles.forEach { handle ->
-            val type =
-                runCatching { handle.executable.declaringClass }.getOrNull() ?: return@forEach
-            val loader = type.classLoader ?: return@forEach
-            candidates.getOrPut(loader, ::mutableListOf) += type
-        }
+        val application = if (process.isSystemServer) null else currentApplication()
         var installed = 0
         contexts.filter { it.processName == process.processName && it.isSystemServer == process.isSystemServer }
             .forEach { context ->
-                val loader = context.resolveClassLoader(candidates)
+                val descriptor = context.reloadTargetDescriptor()
+                val loader = resolveReloadClassLoader(descriptor, param.oldHookHandles, application)
                 if (loader == null) {
-                    RLog.warn("Package replay cannot resolve ClassLoader for ${context.packageName}/${context.processName}")
+                    RLog.warn("Package replay cannot resolve ClassLoader for ${descriptor.targetId}")
                     return@forEach
                 }
                 try {
@@ -96,6 +97,115 @@ class LibXposedPackageReplay(private val namespace: String = "roxyhook.reload.")
     }
 
     private fun key(name: String) = namespace + name
+
+    private fun currentApplication(): Application? {
+        val type = runCatching { "android.app.ActivityThread".toClass() }.getOrNull() ?: return null
+        runCatching {
+            type.getDeclaredMethod("currentApplication").apply { makeAccessible() }
+                .invoke(null) as? Application
+        }.getOrNull()?.let { return it }
+        val thread = runCatching {
+            type.getDeclaredMethod("currentActivityThread").apply { makeAccessible() }
+                .invoke(null)
+        }.getOrNull() ?: return null
+        return runCatching {
+            type.getDeclaredMethod("getApplication").apply { makeAccessible() }
+                .invoke(thread) as? Application
+        }.getOrNull()
+    }
+
+    private fun resolveReloadClassLoader(
+        descriptor: ReloadTargetDescriptor,
+        oldHandles: List<XposedInterface.HookHandle>,
+        application: Application?,
+    ): ClassLoader? {
+        if (!descriptor.isSystemServer &&
+            application?.packageName == descriptor.applicationPackageName
+        ) {
+            application?.let { host ->
+                runCatching { host.classLoader }.getOrNull()?.let { return it }
+            }
+        }
+
+        val declarationsByLoader = LinkedHashMap<ClassLoader, MutableSet<String>>()
+        oldHandles.forEach { handle ->
+            runCatching { handle.executable.declaringClass }
+                .onFailure {
+                    RLog.error(
+                        "Unable to inspect old HookHandle executable: " +
+                            "target=${descriptor.targetId} id=${safeHookId(handle)}",
+                        it,
+                    )
+                }
+                .getOrNull()
+                ?.let { declaringClass ->
+                    val loader = declaringClass.classLoader ?: return@let
+                    declarationsByLoader.getOrPut(loader, ::linkedSetOf) += declaringClass.name
+                }
+        }
+        if (declarationsByLoader.isEmpty()) return null
+
+        if (descriptor.isSystemServer) {
+            if (declarationsByLoader.size != 1) {
+                RLog.error(
+                    "Hot reload system_server ClassLoader ownership is ambiguous: " +
+                        "target=${descriptor.targetId} candidates=${declarationsByLoader.size}",
+                )
+                return null
+            }
+            // The only candidate comes from this target's old handle declaration classes. Never
+            // fall back to the module thread context or the system ClassLoader.
+            return declarationsByLoader.keys.single()
+        }
+
+        val applicationClassName = normalizeApplicationClassName(
+            descriptor.applicationPackageName,
+            descriptor.applicationClassName,
+        )
+        val provenCandidates = if (applicationClassName != null) {
+            declarationsByLoader.keys.filter { candidate ->
+                runCatching { candidate.loadClass(applicationClassName) }
+                    .map { applicationClass ->
+                        applicationClass.name == applicationClassName &&
+                            applicationClass.classLoader === candidate &&
+                            applicationClass isSubclassOf classOf<Application>()
+                    }
+                    .getOrDefault(false)
+            }
+        } else {
+            declarationsByLoader.filterValues { declaringClassNames ->
+                declaringClassNames.any { className ->
+                    className == descriptor.packageName ||
+                        className.startsWith("${descriptor.packageName}.")
+                }
+            }.keys.toList()
+        }
+        if (provenCandidates.size != 1) {
+            RLog.error(
+                "Hot reload application ClassLoader ownership not proven: " +
+                    "target=${descriptor.targetId} " +
+                    "applicationClass=${applicationClassName ?: "<none>"} " +
+                    "candidates=${declarationsByLoader.size} proven=${provenCandidates.size}",
+            )
+            return null
+        }
+        return provenCandidates.single()
+    }
+
+    private fun safeHookId(handle: XposedInterface.HookHandle): String =
+        runCatching { handle.id }.getOrNull()?.takeIf { it.isNotBlank() } ?: "<unknown>"
+
+    private fun normalizeApplicationClassName(
+        applicationPackageName: String?, applicationClassName: String?,
+    ): String? {
+        val packageName = applicationPackageName?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val className = applicationClassName?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        return when {
+            className.startsWith('.') -> packageName + className
+            '.' !in className -> "$packageName.$className"
+            else -> className
+        }
+    }
 
     private fun decode(value: Any?): List<SavedContext>? {
         val state = value as? Bundle ?: return null
@@ -122,17 +232,13 @@ class LibXposedPackageReplay(private val namespace: String = "roxyhook.reload.")
         val moduleApkPath: String?,
         val applicationInfo: ApplicationInfo?
     ) {
-        fun resolveClassLoader(candidates: Map<ClassLoader, List<Class<*>>>): ClassLoader? {
-            val matches = candidates.filterValues { classes ->
-                classes.any { type ->
-                    if (isSystemServer) type.name.startsWith("com.android.server.")
-                    else type.name == packageName || type.name.startsWith("$packageName.")
-                }
-            }.keys
-            if (matches.size == 1) return matches.single()
-            if (isSystemServer && matches.isEmpty() && candidates.size == 1) return candidates.keys.single()
-            return null
-        }
+        fun reloadTargetDescriptor() = ReloadTargetDescriptor(
+            targetId = "$packageName/$processName",
+            isSystemServer = isSystemServer,
+            applicationPackageName = applicationInfo?.packageName ?: packageName,
+            applicationClassName = applicationInfo?.className,
+            packageName = packageName,
+        )
 
         fun toPackageContext(process: ProcessContext, loader: ClassLoader) = PackageContext(
             packageName = packageName, processName = processName, classLoader = loader,
@@ -171,6 +277,14 @@ class LibXposedPackageReplay(private val namespace: String = "roxyhook.reload.")
             }
         }
     }
+
+    private data class ReloadTargetDescriptor(
+        val targetId: String,
+        val isSystemServer: Boolean,
+        val applicationPackageName: String?,
+        val applicationClassName: String?,
+        val packageName: String,
+    )
 
     private fun PackageContext.toBundle() = Bundle().apply {
         putString("package", packageName)
