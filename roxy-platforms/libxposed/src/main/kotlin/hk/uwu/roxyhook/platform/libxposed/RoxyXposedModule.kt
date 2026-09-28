@@ -5,11 +5,23 @@ import android.os.Parcel
 import android.os.Process
 import android.os.UserHandle
 import androidx.annotation.RequiresApi
-import hk.uwu.roxyhook.*
+import hk.uwu.roxyhook.LoadStage
+import hk.uwu.roxyhook.PackageContext
+import hk.uwu.roxyhook.PackageScope
+import hk.uwu.roxyhook.ProcessContext
+import hk.uwu.roxyhook.RoxyConfig
+import hk.uwu.roxyhook.RoxyModule
+import hk.uwu.roxyhook.RoxyRuntime
 import hk.uwu.roxyhook.android.ApplicationInfoSnapshot
 import hk.uwu.roxyhook.android.lifecycle.LifecycleRegistry
+import hk.uwu.roxyhook.platform.LogLevel
 import io.github.libxposed.api.XposedModule
-import io.github.libxposed.api.XposedModuleInterface.*
+import io.github.libxposed.api.XposedModuleInterface.HotReloadedParam
+import io.github.libxposed.api.XposedModuleInterface.HotReloadingParam
+import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
+import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
+import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
+import io.github.libxposed.api.XposedModuleInterface.SystemServerStartingParam
 
 /** API 102 no-argument entry. The processor subclasses this class, not the business module. */
 abstract class RoxyXposedModule : XposedModule() {
@@ -91,7 +103,16 @@ abstract class RoxyXposedModule : XposedModule() {
     /** Opt-in is explicit. Closing managed Java resources does not clean up arbitrary JNI/native state. */
     final override fun onHotReloading(param: HotReloadingParam): Boolean {
         val participant = module as? LibXposedHotReload ?: return onRoxyHotReloading(param)
+        if (!roxy.preflightHotReload()) return false
         if (!participant.prepareHotReload(roxy, param)) return false
+        val cleanupFailures = roxy.quiesceForHotReload()
+        if (cleanupFailures > 0) {
+            roxy.platform.logger.log(
+                LogLevel.ERROR,
+                "Hot reload continues after quiesce failures: count=$cleanupFailures",
+                null,
+            )
+        }
         roxy.close()
         return true
     }

@@ -4,6 +4,7 @@ import hk.uwu.roxyhook.LoadStage
 import hk.uwu.roxyhook.PackageContext
 import hk.uwu.roxyhook.PackageScope
 import hk.uwu.roxyhook.RoxyHook
+import hk.uwu.roxyhook.RoxyHooker
 import hk.uwu.roxyhook.RoxyModule
 import hk.uwu.roxyhook.RoxyRuntime
 import hk.uwu.roxyhook.RuntimeKey
@@ -83,6 +84,52 @@ object RegressionSuite {
                 scope(runtime, true).loadHooker(entry)
                 check(calls == 1)
             }
+        }
+        test("hot reload preflight rejection leaves generation active") {
+            RoxyRuntime(ReflectionPlatform()).use { runtime ->
+                var quiesced = false
+                val hooker = object : RoxyHooker() {
+                    override fun PackageScope.onHook() = Unit
+                    override fun onHotReloadPreflight() = false
+                    override fun onHotReloadQuiesce() {
+                        quiesced = true
+                    }
+                }
+                scope(runtime).loadHooker(hooker)
+                check(!runtime.preflightHotReload())
+                check(runtime.isActive && !runtime.isClosed && !quiesced)
+                check(scope(runtime).packageName == "demo.app")
+            }
+        }
+        test("hot reload quiesces hookers once in reverse order and continues after failure") {
+            val runtime = RoxyRuntime(ReflectionPlatform())
+            val calls = mutableListOf<String>()
+            fun hooker(name: String, fail: Boolean = false) = object : RoxyHooker() {
+                override fun PackageScope.onHook() = Unit
+                override fun onHotReloadPreflight(): Boolean {
+                    calls += "preflight:$name"; return true
+                }
+
+                override fun onHotReloadQuiesce() {
+                    calls += "quiesce:$name"; if (fail) error(name)
+                }
+            }
+            scope(runtime).loadHooker(hooker("first"))
+            scope(runtime).loadHooker(hooker("second", fail = true))
+            check(runtime.preflightHotReload())
+            check(runtime.quiesceForHotReload() == 1)
+            check(runtime.quiesceForHotReload() == 0)
+            check(
+                calls == listOf(
+                    "preflight:first",
+                    "preflight:second",
+                    "quiesce:second",
+                    "quiesce:first"
+                )
+            )
+            check(!runtime.isActive && runtime.isClosed)
+            expect<IllegalStateException> { scope(runtime) }
+            runtime.close()
         }
         test("runtime service keys are typed identity keys; disposal is once") {
             val runtime = RoxyRuntime(ReflectionPlatform())

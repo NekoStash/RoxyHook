@@ -6,6 +6,7 @@ import hk.uwu.roxyhook.platform.HookCall
 import hk.uwu.roxyhook.platform.HookInterceptor
 import hk.uwu.roxyhook.platform.HookOptions
 import hk.uwu.roxyhook.platform.HookPlatform
+import hk.uwu.roxyhook.platform.LogLevel
 import hk.uwu.roxyhook.platform.PlatformHook
 import java.lang.reflect.Constructor
 import java.lang.reflect.Executable
@@ -29,10 +30,15 @@ private class HookBinding {
 
 /** Own one runtime per module generation. No process-global platform singleton. */
 class RoxyRuntime(val platform: HookPlatform, val config: RoxyConfig = RoxyConfig()) : AutoCloseable {
+    private enum class State { ACTIVE, QUIESCING, CLOSED }
+
     private val lock = Any()
     private val handles = linkedSetOf<HookHandle>()
     private val resources = linkedSetOf<AutoCloseable>()
+    private val hookers = mutableListOf<RoxyHooker>()
     private val services = mutableMapOf<RuntimeKey<*>, RuntimeServiceSlot>()
+    @Volatile
+    private var state = State.ACTIVE
     init { RoxyHook.register(this) }
 
     /** A typed process-generation service slot. No platform singleton or classloader-global cache. */
@@ -58,10 +64,64 @@ class RoxyRuntime(val platform: HookPlatform, val config: RoxyConfig = RoxyConfi
         resource
     }
     fun onClose(action: () -> Unit): AutoCloseable = manage(hk.uwu.roxyhook.prefs.Subscription.once(action))
-    @Volatile private var closed = false
-    val isClosed: Boolean get() = closed
+    val isActive: Boolean get() = state == State.ACTIVE
+    val isClosed: Boolean get() = state != State.ACTIVE
     val hookCount: Int get() = synchronized(lock) { handles.size }
     fun scope(context: PackageContext): PackageScope { ensureOpen(); return PackageScope(this, context) }
+
+    internal fun registerHooker(hooker: RoxyHooker) = synchronized(lock) {
+        ensureOpen()
+        if (hookers.none { it === hooker }) hookers += hooker
+    }
+
+    /** Validate hot reload without mutating generation-owned state. */
+    fun preflightHotReload(): Boolean {
+        val snapshot = synchronized(lock) {
+            ensureOpen()
+            hookers.toList()
+        }
+        snapshot.forEach { hooker ->
+            val accepted = runCatching { hooker.onHotReloadPreflight() }
+                .onFailure { error ->
+                    platform.logger.log(
+                        LogLevel.ERROR,
+                        "Hot reload preflight failed for ${hooker.javaClass.name}",
+                        error,
+                    )
+                }
+                .getOrDefault(false)
+            if (!accepted) return false
+        }
+        return true
+    }
+
+    /**
+     * Mark this generation unavailable and stop hooker-owned work in reverse installation order.
+     * Cleanup continues after failures and returns their count.
+     */
+    fun quiesceForHotReload(): Int {
+        val snapshot = synchronized(lock) {
+            when (state) {
+                State.ACTIVE -> state = State.QUIESCING
+                State.QUIESCING -> return 0
+                State.CLOSED -> return 0
+            }
+            hookers.toList().asReversed()
+        }
+        var failures = 0
+        snapshot.forEach { hooker ->
+            runCatching { hooker.onHotReloadQuiesce() }
+                .onFailure { error ->
+                    failures++
+                    platform.logger.log(
+                        LogLevel.ERROR,
+                        "Hot reload quiesce failed for ${hooker.javaClass.name}",
+                        error,
+                    )
+                }
+        }
+        return failures
+    }
 
     fun hook(member: Executable, block: HookBuilder.() -> Unit): HookHandle =
         install(member, HookBuilder(config).apply(block).build())
@@ -135,14 +195,17 @@ class RoxyRuntime(val platform: HookPlatform, val config: RoxyConfig = RoxyConfi
         return HookHandle(this, native, options).also { handles += it }
     }
     internal fun forget(handle: HookHandle) { synchronized(lock) { handles.remove(handle) } }
-    internal fun ensureOpen() { check(!closed) { "RoxyRuntime is closed" } }
+    internal fun ensureOpen() {
+        check(state == State.ACTIVE) { "RoxyRuntime is not active: $state" }
+    }
     override fun close() {
         val snapshot = synchronized(lock) {
-            if (closed) return
-            closed = true
+            if (state == State.CLOSED) return
+            state = State.CLOSED
             (handles.toList() + resources.toList()).also {
                 handles.clear()
                 resources.clear()
+                hookers.clear()
                 services.clear()
             }
         }

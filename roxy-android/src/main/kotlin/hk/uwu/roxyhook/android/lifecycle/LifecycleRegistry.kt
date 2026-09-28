@@ -36,6 +36,28 @@ class LifecycleRegistry private constructor(private val runtime: RoxyRuntime) : 
         replay[packageName to LifecycleKind.APPLICATION_ATTACH]?.instance as? Application
     }
     fun appContext(packageName: String): Context? = application(packageName)?.let { it.applicationContext ?: it }
+
+    /**
+     * Restore the attached Application of an already-running process into a new runtime generation.
+     * Only the stable attach state is restored; Activity, Service, and transient callbacks are never
+     * synthesized. Returns false when this package already has a newer attach event.
+     */
+    fun restoreApplication(application: Application): Boolean {
+        val packageName = application.packageName
+        if (this.application(packageName) != null) return false
+        val context = runCatching { application.applicationContext }.getOrNull() ?: application
+        publish(
+            LifecycleEvent(
+                kind = LifecycleKind.APPLICATION_ATTACH,
+                phase = LifecyclePhase.AFTER,
+                instance = application,
+                context = context,
+                arguments = emptyList(),
+                packageName = packageName,
+            )
+        )
+        return true
+    }
     fun subscribe(packageName: String, kind: LifecycleKind, phase: LifecyclePhase = LifecyclePhase.AFTER,
                   replayLatest: Boolean = false, successfulOnly: Boolean = true,
                   callback: LifecycleEvent.() -> Unit): Subscription {
@@ -68,12 +90,33 @@ class LifecycleRegistry private constructor(private val runtime: RoxyRuntime) : 
                     ActivityLifecycleHooks(registry.hooks).install()
                     ServiceLifecycleHooks(registry.hooks).install()
                     ProviderLifecycleHooks(registry.hooks).install()
+                    currentApplication()?.let(registry::restoreApplication)
                     runtime.manage(registry)
                 } catch (error: Throwable) {
                     try { registry.close() } catch (cleanup: Throwable) { if (cleanup !== error) error.addSuppressed(cleanup) }
                     throw error
                 }
             }
+        }
+
+        private fun currentApplication(): Application? {
+            val type = runCatching { Class.forName("android.app.ActivityThread") }.getOrNull()
+                ?: return null
+            runCatching {
+                type.getDeclaredMethod("currentApplication")
+                    .apply { isAccessible = true }
+                    .invoke(null) as? Application
+            }.getOrNull()?.let { return it }
+            val thread = runCatching {
+                type.getDeclaredMethod("currentActivityThread")
+                    .apply { isAccessible = true }
+                    .invoke(null)
+            }.getOrNull() ?: return null
+            return runCatching {
+                type.getDeclaredMethod("getApplication")
+                    .apply { isAccessible = true }
+                    .invoke(thread) as? Application
+            }.getOrNull()
         }
     }
 }

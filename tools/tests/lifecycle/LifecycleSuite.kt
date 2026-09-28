@@ -111,6 +111,21 @@ object LifecycleSuite {
             registry.subscribe(PKG, LifecycleKind.APPLICATION_ATTACH, replayLatest = true) { check(application === app); replay++ }.close()
             check(replay == 1)
         } }
+        test("restored Application seeds attach replay for a new generation") {
+            fixture { _, _, registry ->
+                val app = TestApp()
+                check(registry.restoreApplication(app))
+                check(!registry.restoreApplication(app))
+                check(registry.application(PKG) === app)
+                var replayed = 0
+                registry.subscribe(PKG, LifecycleKind.APPLICATION_ATTACH, replayLatest = true) {
+                    check(application === app)
+                    check(this.context === app)
+                    replayed++
+                }.close()
+                check(replayed == 1)
+            }
+        }
         test("late replay and live delivery do not duplicate a registration during dispatch") { fixture { p, _, registry ->
             val app = TestApp(); var observed = 0
             registry.subscribe(PKG, LifecycleKind.APPLICATION_ATTACH) {
