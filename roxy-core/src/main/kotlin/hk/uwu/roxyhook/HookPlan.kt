@@ -27,9 +27,12 @@ internal data class HookPlan(
         val call = ScopedCall(raw)
             val param = HookParam(call, platform, removeSelf)
         try {
-            param.phase = if (replacement == null) Phase.BEFORE else Phase.REPLACE
+            param.phase = Phase.BEFORE
             before?.let { invokeProtected(param, platform, it) }
-            replacement?.let { callback -> invokeProtected(param, platform) { result = callback() } }
+            if (param.outcome === Outcome.Pending) replacement?.let { callback ->
+                param.phase = Phase.REPLACE
+                invokeProtected(param, platform) { result = callback() }
+            }
             if (param.outcome === Outcome.Pending) {
                 param.outcome = try { Outcome.Returned(call.proceed(param.args)) }
                 catch (error: Throwable) { rethrowFatal(error); Outcome.Thrown(error) }

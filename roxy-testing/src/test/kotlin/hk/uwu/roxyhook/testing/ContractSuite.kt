@@ -114,6 +114,30 @@ object ContractSuite {
             r.hook(greet) { before { result = "early" }; after { result = "$result-after" } }
             equal("early-after", p.invoke(greet, f, "x")); equal(0, f.calls)
         } }
+        test("before replacement after execute in order") {
+            scenario { p, r, f ->
+                val order = mutableListOf<String>()
+                r.hook(greet) {
+                    before { order += "before"; args[0] = "Roxy"; extras["input"] = args[0] }
+                    replaceAny { order += "replace"; check(extras["input"] == args[0]); "Hi ${args[0]}" }
+                    after { order += "after"; result = "$result!" }
+                }
+                equal("Hi Roxy!", p.invoke(greet, f, "ignored"))
+                equal(listOf("before", "replace", "after"), order); equal(0, f.calls)
+            }
+        }
+        test("before short circuit skips replacement but runs after") {
+            scenario { p, r, f ->
+                val order = mutableListOf<String>()
+                r.hook(greet) {
+                    before { order += "before"; result = "early" }
+                    replaceAny { order += "replace"; "unreachable" }
+                    after { order += "after"; result = "$result!" }
+                }
+                equal("early!", p.invoke(greet, f, "x"))
+                equal(listOf("before", "after"), order); equal(0, f.calls)
+            }
+        }
         test("original throwable identity survives") { scenario { p, r, f ->
             val m = method("boom"); r.hook(m) { errorPolicy = CallbackErrorPolicy.PROPAGATE; after { check(hasThrowable) } }
             check(throws<IllegalArgumentException> { p.invoke(m, f) } === f.targetFailure)
@@ -151,6 +175,19 @@ object ContractSuite {
             r.hook(greet) { replaceAny { callOriginal(); error("callback") } }
             equal("Hello x", p.invoke(greet, f, "x")); equal(1, f.calls)
         } }
+        test("after observes replacement fallback and runs last") {
+            scenario { p, r, f ->
+                val order = mutableListOf<String>()
+                r.hook(greet) {
+                    onFailure { order += it.phase }
+                    before { order += "before" }
+                    replaceAny { order += "replace"; callOriginal(); error("callback") }
+                    after { order += "after"; result = "$result!" }
+                }
+                equal("Hello x!", p.invoke(greet, f, "x")); equal(1, f.calls)
+                equal(listOf("before", "replace", "REPLACE", "after"), order)
+            }
+        }
         test("callOriginal exception is not replayed by protection") { scenario { p, r, f ->
             val m = method("boom"); r.hook(m) { replaceAny { callOriginal() } }
             check(throws<IllegalArgumentException> { p.invoke(m, f) } === f.targetFailure); equal(1, f.calls)
@@ -271,9 +308,9 @@ object ContractSuite {
             throws<IllegalArgumentException> { r.hookAll(listOf(greet, integer)) { id = "batch"; before {} } }
             equal(0, p.registrationCount)
         } }
-        test("empty hooks and conflicting callback modes are rejected") { scenario { _, r, _ ->
+        test("empty hooks are rejected") {
+            scenario { _, r, _ ->
             throws<IllegalStateException> { r.hook(greet) {} }
-            throws<IllegalStateException> { r.hook(greet) { before {}; replaceTo("x") } }
         } }
         test("runtime close removes hooks and rejects new registrations") {
             val p = ReflectionPlatform(); val r = RoxyRuntime(p)
@@ -504,6 +541,34 @@ object ContractSuite {
             RoxyRuntime(p).use { r ->
                 r.hook(greet) { before { args[0] = "Roxy" }; after { result = "$result!" } }
                 equal("Hello Roxy!", p.invoke(greet, f, "x")); equal(1, f.calls)
+            }
+        }
+        test("native callback SPI composes before replacement after") {
+            val p = CallbackReflectionPlatform();
+            val f = Fixture();
+            val order = mutableListOf<String>()
+            RoxyRuntime(p).use { r ->
+                r.hook(greet) {
+                    before { order += "before"; args[0] = "Roxy" }
+                    replaceAny { order += "replace"; "Hi ${args[0]}" }
+                    after { order += "after"; result = "$result!" }
+                }
+                equal("Hi Roxy!", p.invoke(greet, f, "ignored"))
+                equal(listOf("before", "replace", "after"), order); equal(0, f.calls)
+            }
+        }
+        test("native callback SPI skips replacement after before short circuit") {
+            val p = CallbackReflectionPlatform();
+            val f = Fixture();
+            val order = mutableListOf<String>()
+            RoxyRuntime(p).use { r ->
+                r.hook(greet) {
+                    before { order += "before"; result = "early" }
+                    replaceAny { order += "replace"; "unreachable" }
+                    after { order += "after"; result = "$result!" }
+                }
+                equal("early!", p.invoke(greet, f, "ignored"))
+                equal(listOf("before", "after"), order); equal(0, f.calls)
             }
         }
         test("native callback SPI supports HookParam.removeSelf") {

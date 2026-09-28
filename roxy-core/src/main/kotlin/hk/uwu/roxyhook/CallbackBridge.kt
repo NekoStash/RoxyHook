@@ -17,9 +17,12 @@ internal fun HookPlan.callbacks(platform: HookPlatform, removeSelf: () -> Unit):
     val call = ScopedCall(frame)
         val param = HookParam(call, platform, removeSelf)
     try {
-        param.phase = if (replacement == null) Phase.BEFORE else Phase.REPLACE
+        param.phase = Phase.BEFORE
         before?.let { invokeProtected(param, platform, it) }
-        replacement?.let { callback -> invokeProtected(param, platform) { result = callback() } }
+        if (param.outcome === Outcome.Pending) replacement?.let { callback ->
+            param.phase = Phase.REPLACE
+            invokeProtected(param, platform) { result = callback() }
+        }
         object : CallbackSession {
             override val arguments: Array<Any?> get() = param.args
             override val earlyOutcome: CallbackOutcome? get() {

@@ -25,7 +25,15 @@ java('android.content.SharedPreferences', '''public interface SharedPreferences 
 }''')
 java('android.content.Context', f'public class Context {{ public String getPackageName() {{ {T} }} }}')
 java('android.content.DialogInterface', 'public interface DialogInterface { interface OnClickListener { void onClick(DialogInterface dialog,int which); } }')
-java('android.os.Bundle', 'public class Bundle {}')
+java('android.os.Parcelable', '''public interface Parcelable {
+ int describeContents(); void writeToParcel(Parcel parcel,int flags); }''')
+java('android.os.Bundle', f'''public class Bundle {{
+ public void putInt(String key,int value) {{ {T} }} public int getInt(String key,int fallback) {{ {T} }}
+ public void putBoolean(String key,boolean value) {{ {T} }} public boolean getBoolean(String key,boolean fallback) {{ {T} }}
+ public void putString(String key,String value) {{ {T} }} public String getString(String key) {{ {T} }}
+ public void putBundle(String key,Bundle value) {{ {T} }} public Bundle getBundle(String key) {{ {T} }}
+ public void putParcelable(String key,Parcelable value) {{ {T} }}
+ public <V extends Parcelable> V getParcelable(String key) {{ {T} }} }}''')
 java('android.os.Looper', f'public class Looper {{ public static Looper getMainLooper() {{ {T} }} }}')
 java('android.os.Handler', f'public class Handler {{ public Handler(Looper looper) {{ {T} }} public boolean post(Runnable action) {{ {T} }} }}')
 java('android.os.ParcelFileDescriptor', f'''public class ParcelFileDescriptor implements java.io.Closeable {{
@@ -143,10 +151,11 @@ java('android.content.Context', f'''public class Context {{
  public Intent registerReceiver(BroadcastReceiver r,IntentFilter filter,int flags) {{ {T} }}
  public void unregisterReceiver(BroadcastReceiver r) {{ {T} }} public void sendBroadcast(Intent intent) {{ {T} }}
 }}''')
-java('android.content.pm.ApplicationInfo', '''public class ApplicationInfo {
+java('android.content.pm.ApplicationInfo', f'''public class ApplicationInfo implements android.os.Parcelable {{
  public String packageName; public String processName; public String sourceDir; public int uid;
- public ApplicationInfo() {}
- public ApplicationInfo(ApplicationInfo s) { packageName=s.packageName; processName=s.processName; sourceDir=s.sourceDir; uid=s.uid; } }''')
+ public ApplicationInfo() {{}}
+ public ApplicationInfo(ApplicationInfo s) {{ packageName=s.packageName; processName=s.processName; sourceDir=s.sourceDir; uid=s.uid; }}
+ public int describeContents() {{ {T} }} public void writeToParcel(android.os.Parcel parcel,int flags) {{ {T} }} }}''')
 java('android.content.pm.ProviderInfo', 'public class ProviderInfo {}')
 java('android.content.pm.PackageManager', 'public class PackageManager { public static class NameNotFoundException extends Exception {} }')
 java('android.os.Process', f'''public class Process {{ public static int myUid() {{ {T} }}

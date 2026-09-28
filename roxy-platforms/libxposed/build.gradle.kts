@@ -23,8 +23,12 @@ dependencies {
     api(project(":roxy-android"))
     compileOnly(libs.libxposed.api)
     // androidx.annotation provides @RequiresApi; not in the version catalog, declared literally.
-    compileOnly("androidx.annotation:annotation:1.9.1")
+    compileOnly("androidx.annotation:annotation:1.10.0")
     api(libs.libxposed.service)
+    testImplementation(libs.libxposed.api)
+    testImplementation(project(":roxy-testing"))
+    testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
 }
 afterEvaluate {
     publishing {

@@ -1,11 +1,6 @@
 package hk.uwu.roxyhook
 
-import hk.uwu.roxyhook.platform.*
-import hk.uwu.roxyhook.reflect.validateArguments
-import hk.uwu.roxyhook.reflect.validateResult
-import java.lang.reflect.Constructor
-import java.lang.reflect.Executable
-import java.lang.reflect.Method
+import hk.uwu.roxyhook.platform.HookOptions
 
 @RoxyDsl
 class HookBuilder internal constructor(config: RoxyConfig, options: HookOptions = HookOptions()) {
@@ -36,9 +31,6 @@ class HookBuilder internal constructor(config: RoxyConfig, options: HookOptions 
 
     internal fun build(): HookPlan {
         check(beforeCallback != null || afterCallback != null || replacement != null) { "Hook has no callbacks" }
-        check(replacement == null || (beforeCallback == null && afterCallback == null)) {
-            "replaceAny cannot be combined with before/after in the same hook"
-        }
         return HookPlan(HookOptions(priority, id), errorPolicy, beforeCallback, afterCallback, replacement, failureHandler)
     }
 }

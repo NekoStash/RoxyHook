@@ -128,6 +128,32 @@ roxy {
 
 插件会为 Android application 模块接入 RoxyHook 平台、KSP 处理器、LibXposed API 和每个变体的元数据。入口使用 `@RoxyEntry` 标注继承 `RoxyModule` 的顶层类型。
 
+### Hook 回调顺序
+
+同一个 Hook 可以组合 `before`、`replaceAny`（含 `replaceTo`、`replaceUnit`）和 `after`：先执行 `before`
+，再执行替换函数，最后执行 `after`。`before` 若设置 `result` 或 `throwable` 主动短路，则跳过替换函数，但
+`after` 仍执行；替换失败而采用回退策略时，`after` 也会看到回退后的结果或异常。
+
+### 可选的热重载作用域重放
+
+LibXposed 不会在热重载后重新发送 package 事件。模块可实现 `LibXposedHotReload`，并使用
+`LibXposedPackageReplay` 保存已到达的作用域，在新一代明确地重新安装 Hook：
+
+```kotlin
+private val replay = LibXposedPackageReplay()
+override fun PackageScope.onLoad() { replay.record(this); install(this) }
+override fun prepareHotReload(runtime: RoxyRuntime, param: HotReloadingParam) = replay.prepare(param)
+override fun installAfterHotReload(runtime: RoxyRuntime, process: ProcessContext, param: HotReloadedParam) {
+    replay.replay(runtime, process, param, ::install)
+}
+```
+
+作用域快照只存 Android 框架值；目标 ClassLoader 从旧 Hook
+的目标方法所属类恢复，不能唯一确定时跳过该作用域并记录警告，不会猜测或复用旧模块对象。仍需在
+`prepareHotReload` 自行停止模块创建的非托管线程和 JNI 回调。
+如需从已有模块的热重载实现迁移，可向 `LibXposedPackageReplay` 传入原有 Bundle 键前缀（例如
+`"my.module.reload."`）以兼容进行中的旧代状态。
+
 ### 日志
 
 `roxy-core` 提供 `hk.uwu.roxyhook.RLog` 门面，模块代码可在任意位置直接调用，无需持有运行时或平台引用：
