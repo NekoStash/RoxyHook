@@ -16,11 +16,18 @@ val regressionTest by tasks.registering(JavaExec::class) {
     classpath = sourceSets["test"].runtimeClasspath
     mainClass.set("hk.uwu.roxyhook.testing.RegressionSuite")
 }
+val keepHotReloadTest by tasks.registering(JavaExec::class) {
+    group = "verification"
+    description =
+        "Execute KEEP ownership simulations (not real framework compatibility validation)."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("hk.uwu.roxyhook.testing.KeepHotReloadSuite")
+}
 tasks.test {
-    // 本模块的测试是 ContractSuite/RegressionSuite 自定义 main，
-    // 由 contractTest/regressionTest 两个 JavaExec 任务执行；
+    // 本模块的测试是自定义 main，由三个 JavaExec 验证任务执行；
     // 不存在 JUnit 可发现测试，避免 Gradle 9 默认因无发现测试而失败。
     failOnNoDiscoveredTests.set(false)
 }
-tasks.check { dependsOn(contractTest, regressionTest) }
+tasks.check { dependsOn(contractTest, regressionTest, keepHotReloadTest) }
 publishing { publications { create<MavenPublication>("maven") { from(components["java"]) } } }

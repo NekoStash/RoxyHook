@@ -14,7 +14,6 @@ import hk.uwu.roxyhook.RoxyModule
 import hk.uwu.roxyhook.RoxyRuntime
 import hk.uwu.roxyhook.android.ApplicationInfoSnapshot
 import hk.uwu.roxyhook.android.lifecycle.LifecycleRegistry
-import hk.uwu.roxyhook.platform.LogLevel
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.HotReloadedParam
 import io.github.libxposed.api.XposedModuleInterface.HotReloadingParam
@@ -76,9 +75,13 @@ abstract class RoxyXposedModule : XposedModule() {
     }
     private fun packageScope(param: PackageLoadedParam, loader: ClassLoader, stage: LoadStage): PackageScope =
         roxy.scope(PackageContext(param.packageName, process.processName, loader, param.isFirstPackage,
-            process.isSystemServer, stage, param.applicationInfo?.processName ?: param.packageName,
+            process.isSystemServer,
+            stage,
+            param.applicationInfo.processName ?: param.packageName,
             currentUserId(), process.modulePackageName, process.moduleApkPath,
-            param.applicationInfo?.let(::ApplicationInfoSnapshot)))
+            param.applicationInfo.let(::ApplicationInfoSnapshot)
+        )
+        )
 
     /**
      * Multi-user / work-profile / isolated-process user id. Verified against this machine's
@@ -105,38 +108,28 @@ abstract class RoxyXposedModule : XposedModule() {
         val participant = module as? LibXposedHotReload ?: return onRoxyHotReloading(param)
         if (!roxy.preflightHotReload()) return false
         if (!participant.prepareHotReload(roxy, param)) return false
-        val cleanupFailures = roxy.quiesceForHotReload()
-        if (cleanupFailures > 0) {
-            roxy.platform.logger.log(
-                LogLevel.ERROR,
-                "Hot reload continues after quiesce failures: count=$cleanupFailures",
-                null,
-            )
-        }
-        roxy.close()
+        roxy.retireForHotReload()
         return true
     }
     protected open fun onRoxyHotReloading(param: HotReloadingParam): Boolean = false
     final override fun onHotReloaded(param: HotReloadedParam) {
-        initialize(param)
+        val oldHandles = param.oldHookHandles.toList()
+        try {
+            initialize(param)
+        } catch (error: Throwable) {
+            removeNativeHooks(oldHandles, error)
+            throw error
+        }
         guarded {
-            removeOldHooks(param)
-            val participant = module as? LibXposedHotReload
-            if (participant != null) participant.installAfterHotReload(roxy, process, param)
-            else onRoxyHotReloaded(param)
+            (roxy.platform as LibXposedPlatform).adoptOldHooks(roxy, oldHandles) {
+                val participant = module as? LibXposedHotReload
+                if (participant != null) participant.installAfterHotReload(roxy, process, param)
+                else onRoxyHotReloaded(param)
+            }
         }
     }
     /** No fake onModuleLoaded/onPackageReady replay. Reinstall deliberately using the new classloader. */
     protected open fun onRoxyHotReloaded(param: HotReloadedParam) = Unit
-    private fun removeOldHooks(param: HotReloadedParam) {
-        var failure: Throwable? = null
-        param.oldHookHandles.forEach { handle ->
-            try { handle.unhook() } catch (error: Throwable) {
-                if (failure == null) failure = error else if (failure !== error) failure!!.addSuppressed(error)
-            }
-        }
-        failure?.let { throw it }
-    }
     private inline fun guarded(block: () -> Unit) {
         try { block() } catch (error: Throwable) {
             // A failed entry must not leave a partially installed generation behind.

@@ -1,6 +1,15 @@
 package hk.uwu.roxyhook.testing
 
-import hk.uwu.roxyhook.platform.*
+import hk.uwu.roxyhook.HotReloadPolicy
+import hk.uwu.roxyhook.platform.Capability
+import hk.uwu.roxyhook.platform.HookCall
+import hk.uwu.roxyhook.platform.HookInterceptor
+import hk.uwu.roxyhook.platform.HookOptions
+import hk.uwu.roxyhook.platform.HookPlatform
+import hk.uwu.roxyhook.platform.PlatformHook
+import hk.uwu.roxyhook.platform.PlatformInfo
+import hk.uwu.roxyhook.platform.RetainedHook
+import hk.uwu.roxyhook.platform.RoxyLogger
 import java.lang.invoke.MethodHandles
 import java.lang.reflect.Executable
 import java.lang.reflect.InvocationTargetException
@@ -12,13 +21,33 @@ import java.lang.reflect.Modifier
  */
 class ReflectionPlatform(override val logger: RoxyLogger = RoxyLogger.NONE) : HookPlatform {
     override val info = PlatformInfo("Roxy JVM test platform", "0.1.0", 1)
-    override val capabilities = setOf(Capability.METHOD_HOOK, Capability.INVOKE_ORIGINAL, Capability.INTERCEPTOR_CHAIN, Capability.ATOMIC_REPLACEMENT)
+    override val capabilities = setOf(
+        Capability.METHOD_HOOK,
+        Capability.INVOKE_ORIGINAL,
+        Capability.INTERCEPTOR_CHAIN,
+        Capability.ATOMIC_REPLACEMENT,
+        Capability.HOT_RELOAD_KEEP
+    )
     private val lock = Any()
     private var nextOrder = 0L
     private val registrations = mutableListOf<Registration>()
     /** Useful for testing failure rollback. */
     var reject: ((Executable) -> Boolean)? = null
+
+    /** Failure injection happens before removing a registration, preserving retry semantics. */
+    var rejectUnhook: ((Executable) -> Boolean)? = null
     val registrationCount: Int get() = synchronized(lock) { registrations.size }
+    val hookCalls: Long get() = synchronized(lock) { nextOrder }
+
+    /**
+     * Test-only enumeration assumption: returns every still-live KEEP from all generations.
+     * Each call creates fresh management wrappers, never installs/replaces callbacks.
+     * This explicitly DOES NOT establish that any real framework enumerates older generations.
+     */
+    fun retainedHooks(): List<RetainedHook> = synchronized(lock) {
+        registrations.filter { it.options.hotReloadPolicy == HotReloadPolicy.KEEP }
+            .map { RetainedHook(Handle(it), it.options) }
+    }
 
     private data class Registration(val token: Any, val order: Long, val member: Executable,
                                     val options: HookOptions, val interceptor: HookInterceptor)
@@ -33,7 +62,12 @@ class ReflectionPlatform(override val logger: RoxyLogger = RoxyLogger.NONE) : Ho
     private inner class Handle(private val registration: Registration) : PlatformHook {
         override val member get() = registration.member
         override val id get() = registration.options.id
-        override fun unhook() { synchronized(lock) { registrations.removeAll { it.token === registration.token } } }
+        override fun unhook() {
+            synchronized(lock) {
+                check(rejectUnhook?.invoke(member) != true) { "Test-requested unhook failure: $member" }
+                registrations.removeAll { it.token === registration.token }
+            }
+        }
         override fun replace(interceptor: HookInterceptor): PlatformHook = synchronized(lock) {
             val index = registrations.indexOfFirst { it.token === registration.token }
             check(index >= 0) { "Native handle is no longer valid" }
@@ -58,6 +92,8 @@ class ReflectionPlatform(override val logger: RoxyLogger = RoxyLogger.NONE) : Ho
         }
         return next(0, arrayOf(*arguments))
     }
+
+    @Suppress("NewApi")
     override fun invokeOriginal(member: Executable, receiver: Any?, arguments: Array<Any?>): Any? {
         require(member is Method)
         try {

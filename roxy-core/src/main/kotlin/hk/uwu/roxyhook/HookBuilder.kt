@@ -6,6 +6,7 @@ import hk.uwu.roxyhook.platform.HookOptions
 class HookBuilder internal constructor(config: RoxyConfig, options: HookOptions = HookOptions()) {
     var priority: Int = options.priority
     var id: String? = options.id
+    var hotReloadPolicy: HotReloadPolicy = options.hotReloadPolicy
     var errorPolicy: CallbackErrorPolicy = config.callbackErrorPolicy
     private var beforeCallback: (HookParam.() -> Unit)? = null
     private var afterCallback: (HookParam.() -> Unit)? = null
@@ -31,6 +32,13 @@ class HookBuilder internal constructor(config: RoxyConfig, options: HookOptions 
 
     internal fun build(): HookPlan {
         check(beforeCallback != null || afterCallback != null || replacement != null) { "Hook has no callbacks" }
-        return HookPlan(HookOptions(priority, id), errorPolicy, beforeCallback, afterCallback, replacement, failureHandler)
+        return HookPlan(
+            HookOptions(priority, id, hotReloadPolicy),
+            errorPolicy,
+            beforeCallback,
+            afterCallback,
+            replacement,
+            failureHandler
+        )
     }
 }

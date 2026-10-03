@@ -10,6 +10,8 @@ interface HookPlatform {
     val capabilities: Set<Capability>
     val logger: RoxyLogger
 
+    /** Validate native metadata without installing anything; also used by batch and reload preflight. */
+    fun validateHookOptions(options: HookOptions) {}
     fun hook(member: Executable, options: HookOptions, interceptor: HookInterceptor): PlatformHook
     /** Invoke this exact executable, bypassing every hook. Unwrap InvocationTargetException. */
     fun invokeOriginal(member: Executable, receiver: Any?, arguments: Array<Any?>): Any?

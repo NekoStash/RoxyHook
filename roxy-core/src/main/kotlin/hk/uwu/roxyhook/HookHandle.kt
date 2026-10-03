@@ -9,37 +9,51 @@ import java.lang.reflect.Executable
 class HookHandle internal constructor(
     private val runtime: RoxyRuntime,
     private var native: PlatformHook,
-    private val options: HookOptions
+    internal val options: HookOptions,
 ) : AutoCloseable {
-    private val lock = Any()
-    @Volatile private var removed = false
+    enum class State { ACTIVE, REMOVED, DETACHED }
+
+    @Volatile
+    var state: State = State.ACTIVE
+        private set
     val member: Executable = native.member
-    internal fun invalidate() { removed = true }
-    val isActive: Boolean get() = !removed && !runtime.isClosed
     val id: String? get() = options.id
-    /** Replaces this registration atomically; priority and id cannot change. Returns this managed handle. */
-    fun replace(block: HookBuilder.() -> Unit): HookHandle = synchronized(lock) {
-        runtime.ensureOpen()
-        check(!removed) { "Hook was removed" }
-        runtime.platform.requireCapability(Capability.ATOMIC_REPLACEMENT)
-        val plan = HookBuilder(runtime.config, options).apply(block).build()
-        require(plan.options == options) { "Replacement must retain priority and id" }
-        plan.checkMember(member)
-        native =
-            (native as? CallbackPlatformHook)?.replaceCallbacks(plan.callbacks(runtime.platform) { unhook() })
-                ?: native.replace(plan.interceptor(runtime.platform) { unhook() })
-        this
-    }
-    fun unhook() {
-        synchronized(lock) {
-            if (removed) return
-            native.unhook()
-            removed = true
-        }
-        runtime.forget(this)
+    val hotReloadPolicy: HotReloadPolicy get() = options.hotReloadPolicy
+    val isActive: Boolean get() = state == State.ACTIVE && !runtime.isClosed
+    internal fun invalidate() {
+        state = State.REMOVED
     }
 
-    /** Alias for [unhook], matching the concise handle lifecycle vocabulary. */
+    internal fun detachForHotReload() {
+        check(state == State.ACTIVE)
+        state = State.DETACHED
+    }
+
+    /** Replaces this registration atomically; KEEP registrations are intentionally immutable. */
+    fun replace(block: HookBuilder.() -> Unit): HookHandle =
+        synchronized(runtime.registrationLock) {
+        runtime.ensureOpen()
+            check(state == State.ACTIVE) { "Hook is not active: $state" }
+            check(hotReloadPolicy != HotReloadPolicy.KEEP) { "KEEP hooks cannot be replaced; remove explicitly or restart" }
+        runtime.platform.requireCapability(Capability.ATOMIC_REPLACEMENT)
+        val plan = HookBuilder(runtime.config, options).apply(block).build()
+            require(plan.options == options) { "Replacement must retain priority, id, and hot reload policy" }
+        plan.checkMember(member)
+            native =
+                (native as? CallbackPlatformHook)?.replaceCallbacks(plan.callbacks(runtime.platform) { unhook() })
+                    ?: native.replace(plan.interceptor(runtime.platform) { unhook() })
+        this
+    }
+
+    fun unhook() = synchronized(runtime.registrationLock) {
+        if (state != State.ACTIVE) return@synchronized
+        // Managed scopes/groups are closed during retirement too. Their KEEP registrations
+        // remain tracked until all cleanup succeeds, allowing failure cleanup to unhook them.
+        if (hotReloadPolicy == HotReloadPolicy.KEEP && runtime.isRetiring) return@synchronized
+        native.unhook()
+        state = State.REMOVED
+        runtime.forget(this)
+    }
     fun remove() = unhook()
     override fun close() = unhook()
 }

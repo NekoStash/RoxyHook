@@ -154,6 +154,50 @@ override fun installAfterHotReload(runtime: RoxyRuntime, process: ProcessContext
 如需从已有模块的热重载实现迁移，可向 `LibXposedPackageReplay` 传入原有 Bundle 键前缀（例如
 `"my.module.reload."`）以兼容进行中的旧代状态。
 
+### 单 Hook / hookAll 保留旧回调（实验性 KEEP）
+
+```kotlin
+import hk.uwu.roxyhook.HotReloadPolicy
+
+runtime.hook(method) {
+    hotReloadPolicy = HotReloadPolicy.KEEP
+    before { /* 不依赖会在热重载时释放的资源 */ }
+}
+
+runtime.hookAll(methods) {
+    hotReloadPolicy = HotReloadPolicy.KEEP
+    after { /* 每个选中方法独立保留 */ }
+}
+```
+
+无需填写 `id`。同一模块、同一实际目标方法的匿名 KEEP 使用一个自动槽位；再次安装会复用已有 Hook，
+不会替换它的回调。只有要在**同一个方法上保留多个独立 Hook** 时才需用不同的可选 `id` 区分。
+类名相同但 ClassLoader 不同的目标不会混用；不依赖源码行号、lambda 类名或集合顺序。
+
+- 默认 `REINSTALL` 仍沿用现有流程，重装依赖模块的 `installAfterHotReload` / replay；KEEP 不会自动开启模块热重载。
+- KEEP 的代码、错误策略保持首次安装版本；重复声明的 priority 必须一致。新 DSL 配置块仍会执行，但新回调不会安装。
+- `hookAll` 支持重复成员去重、成员重排、交叠集合，以及从单 Hook 改为批量。新增成员首次安装，未再选中的旧
+  KEEP **不会自动卸载**。
+- 批量失败仅回滚本次新装的成员，不卸载复用的旧 KEEP。成功后的 `HookGroup.close()` 则卸载组内全部成员；交叠组共享
+  handle，关闭一组会使另一组共享的成员失效。
+- 当前代 handle 的 `remove()` / `close()` 和 runtime 的普通 `close()` 可卸载
+  KEEP；旧代已移交的包装不再操作底层注册。KEEP 暂不支持 `replace()`、回调内 `removeSelf()` 或类初始化器
+  Hook。
+- 不支持 KEEP 的平台会显式拒绝。用户 `id` 不可使用 `roxy.keep.` 保留前缀。
+- 从匿名 KEEP 改为匿名 REINSTALL 不构成替换，会成为两条注册；需先显式移除旧 KEEP 或重启目标进程。删除声明也不等于卸载。
+
+**生命周期代价：**保留的回调仍来自旧模块 ClassLoader，会阻止该代立即回收。不要捕获旧
+runtime、scope、Activity，
+或依赖 `onDispose` / quiesce 会关闭的订阅、线程、JNI、服务等资源；这些资源不会因 KEEP 而保留。
+推荐只保留无外部生命周期依赖的参数/返回值处理。修改 KEEP 实现、首次升级到此功能或协议降级后应重启目标进程。
+`HookOptions` 扩展可能影响旧二进制调用点，下游模块应重新编译，不承诺 data class 的完整二进制兼容。
+
+**验证边界：**该功能尚需针对实际执行框架验证连续 A→B→C 重载：每一代的 `oldHookHandles` 必须包含更早代仍存活的
+KEEP。
+API 接口本身不保证这种跨多代枚举；JVM/模拟平台测试不能替代设备验证。未完成该验证前，不应将 KEEP
+视为已支持的生产能力。
+若框架漏报旧 handle，不能靠 Bundle 携带旧模块对象来绕过，应由执行框架补足契约或重启目标进程。
+
 ### 日志
 
 `roxy-core` 提供 `hk.uwu.roxyhook.RLog` 门面，模块代码可在任意位置直接调用，无需持有运行时或平台引用：
