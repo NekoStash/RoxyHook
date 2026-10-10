@@ -35,7 +35,9 @@ class LifecycleRegistry private constructor(private val runtime: RoxyRuntime) : 
     fun application(packageName: String): Application? = synchronized(lock) {
         replay[packageName to LifecycleKind.APPLICATION_ATTACH]?.instance as? Application
     }
-    fun appContext(packageName: String): Context? = application(packageName)?.let { it.applicationContext ?: it }
+
+    /** Actual ApplicationContext; attach can finish before LoadedApk installs its Application. */
+    fun appContext(packageName: String): Context? = application(packageName)?.applicationContext
 
     /**
      * Restore the attached Application of an already-running process into a new runtime generation.

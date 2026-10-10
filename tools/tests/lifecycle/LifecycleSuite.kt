@@ -29,7 +29,9 @@ class TestApp : Application() {
     val res = android.content.res.Resources()
     var packageContext: Context? = null
     override fun getPackageName() = PKG
-    override fun getApplicationContext(): Context? = null // Real attach can precede LoadedApk.mApplication assignment.
+    var readyApplicationContext: Context? = null
+    override fun getApplicationContext(): Context? =
+        readyApplicationContext // Installed after attach returns.
     override fun getResources() = res
     override fun createPackageContext(name: String, flags: Int) =
         packageContext ?: super.createPackageContext(name, flags)
@@ -104,13 +106,134 @@ object LifecycleSuite {
             p.dispatch(appCreate, app) { order += "body"; null }
             check(order == listOf("before", "body", "after")) { order }
         } }
-        test("attached Application is usable even when applicationContext is null") { fixture { p, _, registry ->
+        test("attach retains Application but does not invent a ready applicationContext") {
+            fixture { p, _, registry ->
             val app = TestApp(); p.dispatch(attach, app, arrayOf(context))
-            check(registry.application(PKG) === app); check(registry.appContext(PKG) === app)
+                check(registry.application(PKG) === app); check(registry.appContext(PKG) == null)
             var replay = 0
             registry.subscribe(PKG, LifecycleKind.APPLICATION_ATTACH, replayLatest = true) { check(application === app); replay++ }.close()
             check(replay == 1)
         } }
+        test("withAppContext skips cold attach and registers once at onCreate") {
+            fixture { p, r, registry ->
+                val app = TestApp();
+                var registrations = 0
+                val scope = r.scope(hk.uwu.roxyhook.PackageContext(PKG, PKG, javaClass.classLoader))
+                val subscription = scope.withAppContext {
+                    check(this === app && applicationContext === app)
+                    registrations++
+                }
+                p.dispatch(attach, app, arrayOf(context))
+                check(registrations == 0 && registry.appContext(PKG) == null)
+                app.readyApplicationContext = app
+                p.dispatch(appCreate, app)
+                p.dispatch(appCreate, app)
+                check(registrations == 1)
+                subscription.close()
+            }
+        }
+        test("withAppContext restores a ready hot-reload attach without synthesizing onCreate") {
+            fixture { _, r, registry ->
+                val app = TestApp().apply { readyApplicationContext = this }
+                check(registry.restoreApplication(app))
+                var registrations = 0;
+                var creates = 0
+                val scope = r.scope(hk.uwu.roxyhook.PackageContext(PKG, PKG, javaClass.classLoader))
+                val subscription = scope.withAppContext { check(this === app); registrations++ }
+                registry.subscribe(
+                    PKG,
+                    LifecycleKind.APPLICATION_CREATE,
+                    replayLatest = true
+                ) { creates++ }.close()
+                check(registrations == 1 && creates == 0)
+                subscription.close()
+            }
+        }
+        test("restoring an Application without applicationContext does not invoke withAppContext") {
+            fixture { _, r, registry ->
+                val app = TestApp();
+                var registrations = 0
+                check(registry.restoreApplication(app))
+                val scope = r.scope(hk.uwu.roxyhook.PackageContext(PKG, PKG, javaClass.classLoader))
+                val subscription = scope.withAppContext { registrations++ }
+                check(registrations == 0 && registry.appContext(PKG) == null)
+                subscription.close()
+            }
+        }
+        test("withAppContext close before readiness prevents late registration") {
+            fixture { p, r, _ ->
+                val app = TestApp();
+                var registrations = 0
+                val scope = r.scope(hk.uwu.roxyhook.PackageContext(PKG, PKG, javaClass.classLoader))
+                val subscription = scope.withAppContext { registrations++ }
+                p.dispatch(attach, app, arrayOf(context))
+                subscription.close()
+                app.readyApplicationContext = app
+                p.dispatch(appCreate, app)
+                check(registrations == 0)
+            }
+        }
+        test("withAppContext quiesce before readiness prevents late registration") {
+            fixture { p, r, _ ->
+                val app = TestApp();
+                var registrations = 0
+                val scope = r.scope(hk.uwu.roxyhook.PackageContext(PKG, PKG, javaClass.classLoader))
+                val subscription = scope.withAppContext { registrations++ }
+                p.dispatch(attach, app, arrayOf(context))
+                check(r.quiesceForHotReload() == 0)
+                app.readyApplicationContext = app
+                p.dispatch(appCreate, app)
+                check(registrations == 0)
+                subscription.close()
+            }
+        }
+        test("withAppContext failed create does not register until a successful create") {
+            fixture { p, r, _ ->
+                val app = TestApp();
+                var registrations = 0
+                val scope = r.scope(hk.uwu.roxyhook.PackageContext(PKG, PKG, javaClass.classLoader))
+                val subscription = scope.withAppContext { registrations++ }
+                p.dispatch(attach, app, arrayOf(context))
+                app.readyApplicationContext = app
+                check(runCatching {
+                    p.dispatch(
+                        appCreate,
+                        app
+                    ) { error("failed create") }
+                }.isFailure)
+                check(registrations == 0)
+                p.dispatch(appCreate, app)
+                check(registrations == 1)
+                subscription.close()
+            }
+        }
+        test("withAppContext close waits for in-flight registration") {
+            fixture { p, r, _ ->
+                val app = TestApp();
+                val entered = CountDownLatch(1);
+                val release = CountDownLatch(1)
+                val closing = CountDownLatch(1);
+                val closed = CountDownLatch(1)
+                val scope = r.scope(hk.uwu.roxyhook.PackageContext(PKG, PKG, javaClass.classLoader))
+                val subscription = scope.withAppContext {
+                    entered.countDown(); check(release.await(3, TimeUnit.SECONDS))
+                }
+                p.dispatch(attach, app, arrayOf(context))
+                app.readyApplicationContext = app
+                val creator = Thread { p.dispatch(appCreate, app) }.apply { start() }
+                check(entered.await(3, TimeUnit.SECONDS))
+                val closer =
+                    Thread { closing.countDown(); subscription.close(); closed.countDown() }.apply { start() }
+                try {
+                    check(closing.await(3, TimeUnit.SECONDS))
+                    check(!closed.await(100, TimeUnit.MILLISECONDS))
+                } finally {
+                    release.countDown(); creator.join(4000); closer.join(4000)
+                }
+                check(!creator.isAlive && !closer.isAlive && closed.count == 0L)
+                check(p.errors.isEmpty())
+            }
+        }
         test("restored Application seeds attach replay for a new generation") {
             fixture { _, _, registry ->
                 val app = TestApp()
@@ -202,9 +325,12 @@ object LifecycleSuite {
             } finally { r.close() }
             check(p.activeCount == 0)
         }
-        test("scope appContext/appResources surface the attached application") { fixture { p, r, registry ->
+        test("scope appContext/appResources become available after LoadedApk installs Application") {
+            fixture { p, r, registry ->
             val app = TestApp(); p.dispatch(attach, app, arrayOf(context))
             val scope = r.scope(hk.uwu.roxyhook.PackageContext(PKG, PKG, javaClass.classLoader))
+                check(scope.appContext == null && scope.appResources == null)
+                app.readyApplicationContext = app
             check(scope.appContext === app)
             check(scope.appResources === app.resources)
         } }
@@ -250,7 +376,11 @@ object LifecycleSuite {
             check(failure is IllegalStateException && failure.cause === security) { "$failure" }
         } }
         test("no-arg moduleResources resolves against attached appContext") { fixture { p, r, registry ->
-            val app = TestApp(); p.dispatch(attach, app, arrayOf(context))
+            val app = TestApp().apply { readyApplicationContext = this }; p.dispatch(
+            attach,
+            app,
+            arrayOf(context)
+        )
             val moduleCtx = TestContext()
             app.packageContext = moduleCtx
             val scope = r.scope(hk.uwu.roxyhook.PackageContext(PKG, PKG, javaClass.classLoader,

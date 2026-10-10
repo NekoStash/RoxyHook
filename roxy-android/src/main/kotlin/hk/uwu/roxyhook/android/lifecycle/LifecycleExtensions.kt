@@ -19,12 +19,31 @@ val PackageScope.application: Application? get() = registry().application(packag
 val PackageScope.appContext: Context? get() = registry().appContext(packageName)
 /**
  * Host application's [Resources], a read-only convenience for `appContext?.resources`.
- * Same lifecycle semantics as [appContext]: null until the application has attached, and reading
+ * Same lifecycle semantics as [appContext]: null until its real application context is ready, and reading
  * it in system_server fails just like [appContext]. The host's resources are never mutated.
  */
 val PackageScope.appResources: android.content.res.Resources? get() = appContext?.resources
 fun PackageScope.onAttach(block: LifecycleEvent.() -> Unit): Subscription = lifecycle { onAttach(block = block) }
 fun PackageScope.onCreate(block: LifecycleEvent.() -> Unit): Subscription = lifecycle { onCreate(block = block) }
-fun PackageScope.withAppContext(block: Context.() -> Unit): Subscription = lifecycle {
-    onAttach(replay = true) { application.block() }
+
+/** Runs once with a real application context: onCreate on cold start, attach replay on reload. */
+fun PackageScope.withAppContext(block: Context.() -> Unit): Subscription {
+    val lock = Any()
+    var delivered = false
+    var closed = false
+    fun deliver(application: Application) = synchronized(lock) {
+        if (closed || delivered || !runtime.isActive) return@synchronized
+        val context = application.applicationContext ?: return@synchronized
+        delivered = true
+        context.block()
+    }
+
+    val subscription = lifecycle {
+        onAttach(replay = true) { deliver(application) }
+        onCreate(replay = true) { deliver(application) }
+    }
+    return Subscription.once {
+        synchronized(lock) { closed = true }
+        subscription.close()
+    }
 }
