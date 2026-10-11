@@ -187,6 +187,99 @@ class LibXposedPackageReplayTest {
         }
     }
 
+    @Test
+    fun systemServerRestoresEachPackageLoaderAcrossRepeatedReloads() {
+        val isolated = isolatedTarget()
+        val system = ProcessContext("system", true, "module.app")
+        val expected = linkedMapOf(
+            "android" to loader,
+            "com.android.providers.settings" to isolated.classLoader,
+            "com.android.server.telecom" to isolated.classLoader,
+        )
+        var replay = LibXposedPackageReplay()
+        expected.forEach { (name, hostLoader) ->
+            replay.record(PackageContext(name, "system", hostLoader, isSystemServer = true))
+        }
+        val handles = listOf(handle(target), handle(isolated.getDeclaredMethod("greet")))
+        repeat(2) {
+            val preparing = Preparing()
+            assertEquals(true, replay.prepare(preparing))
+            expected.values.forEachIndexed { index, hostLoader ->
+                assertEquals(
+                    System.identityHashCode(hostLoader), (preparing.saved as Bundle)
+                        .getBundle("roxyhook.reload.context.$index")!!.getInt("loaderIdentity")
+                )
+            }
+            replay = LibXposedPackageReplay()
+            RoxyRuntime(ReflectionPlatform()).use { runtime ->
+                val restored = linkedMapOf<String, ClassLoader>()
+                assertEquals(3, replay.replay(runtime, system, Reloaded(preparing.saved, handles)) {
+                    restored[it.packageName] = it.appClassLoader
+                })
+                assertEquals(expected.keys, restored.keys)
+                expected.forEach { (name, hostLoader) -> assertSame(hostLoader, restored[name]) }
+            }
+        }
+    }
+
+    @Test
+    fun systemServerRecoversEventLoaderFromHookLoaderParentChain() {
+        val isolated = isolatedTarget()
+        val replay = LibXposedPackageReplay()
+        replay.record(PackageContext("android", "system", loader, isSystemServer = true))
+        val preparing = Preparing()
+        assertEquals(true, replay.prepare(preparing))
+        RoxyRuntime(ReflectionPlatform()).use { runtime ->
+            assertEquals(
+                1, LibXposedPackageReplay().replay(
+                    runtime, ProcessContext("system", true, "module.app"),
+                    Reloaded(preparing.saved, listOf(handle(isolated.getDeclaredMethod("greet")))),
+                ) { assertSame(loader, it.appClassLoader) })
+        }
+    }
+
+    @Test
+    fun systemServerSkipsMissingRecordedLoaderAndAmbiguousLegacyState() {
+        val isolated = isolatedTarget()
+        val replay = LibXposedPackageReplay()
+        replay.record(
+            PackageContext(
+                "android",
+                "system",
+                checkNotNull(isolated.classLoader),
+                isSystemServer = true
+            )
+        )
+        val preparing = Preparing()
+        assertEquals(true, replay.prepare(preparing))
+        val saved = preparing.saved as Bundle
+        val system = ProcessContext("system", true, "module.app")
+        val otherHandle = handle(isolated.getDeclaredMethod("greet"))
+        RoxyRuntime(ReflectionPlatform()).use { runtime ->
+            assertEquals(
+                0, LibXposedPackageReplay().replay(
+                    runtime, system, Reloaded(saved, listOf(handle(target))),
+                ) { error("A different loader must not be substituted") })
+            saved.getBundle("roxyhook.reload.context.0")!!.apply {
+                remove("loaderIdentity")
+                remove("loaderType")
+            }
+            assertEquals(
+                0, LibXposedPackageReplay().replay(
+                    runtime, system, Reloaded(saved, listOf(handle(target), otherHandle)),
+                ) { error("Ambiguous legacy state must not pick a loader") })
+        }
+    }
+
+    private fun isolatedTarget(): Class<*> {
+        val name = ReplayTarget::class.java.name
+        val bytes = checkNotNull(loader.getResourceAsStream(name.replace('.', '/') + ".class"))
+            .use { it.readBytes() }
+        return object : ClassLoader(loader) {
+            fun defineTarget(): Class<*> = defineClass(name, bytes, 0, bytes.size)
+        }.defineTarget()
+    }
+
     private class Preparing : HotReloadingParam {
         override fun getExtras(): Bundle? = null
         var saved: Any? = null

@@ -17,6 +17,8 @@ import hk.uwu.roxyhook.android.ApplicationInfoSnapshot
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModuleInterface.HotReloadedParam
 import io.github.libxposed.api.XposedModuleInterface.HotReloadingParam
+import java.util.Collections
+import java.util.IdentityHashMap
 
 /**
  * Opt-in package-scope replay for [LibXposedHotReload]. The framework does not replay package
@@ -145,6 +147,29 @@ class LibXposedPackageReplay(private val namespace: String = "roxyhook.reload.")
         }
         if (declarationsByLoader.isEmpty()) return null
 
+        // Host loaders survive module reloads. Match the recorded event loader, rather than
+        // treating every old hook in this process as evidence for every package. Only primitive
+        // framework values cross generations; never serialize a loader or module-owned object.
+        if (descriptor.loaderIdentity != null) {
+            // A hook may target a class defined by a child of the event loader. Its parent chain
+            // can still expose the recorded loader without selecting an unrelated package loader.
+            val reachable = Collections.newSetFromMap(IdentityHashMap<ClassLoader, Boolean>())
+            declarationsByLoader.keys.forEach { declarationLoader ->
+                var current: ClassLoader? = declarationLoader
+                while (current != null && reachable.add(current)) current = current.parent
+            }
+            val candidates = reachable.filter {
+                System.identityHashCode(it) == descriptor.loaderIdentity &&
+                    it.javaClass.name == descriptor.loaderType
+            }
+            if (candidates.size == 1) return candidates.single()
+            RLog.error(
+                "Hot reload recorded ClassLoader cannot be resolved uniquely: " +
+                    "target=${descriptor.targetId} candidates=${candidates.size}",
+            )
+            return null
+        }
+
         if (descriptor.isSystemServer) {
             if (declarationsByLoader.size != 1) {
                 RLog.error(
@@ -153,7 +178,7 @@ class LibXposedPackageReplay(private val namespace: String = "roxyhook.reload.")
                 )
                 return null
             }
-            // The only candidate comes from this target's old handle declaration classes. Never
+            // Legacy snapshots have no loader identity. Accept only an unambiguous candidate. Never
             // fall back to the module thread context or the system ClassLoader.
             return declarationsByLoader.keys.single()
         }
@@ -230,7 +255,9 @@ class LibXposedPackageReplay(private val namespace: String = "roxyhook.reload.")
         val userId: Int,
         val modulePackageName: String?,
         val moduleApkPath: String?,
-        val applicationInfo: ApplicationInfo?
+        val applicationInfo: ApplicationInfo?,
+        val loaderIdentity: Int?,
+        val loaderType: String?,
     ) {
         fun reloadTargetDescriptor() = ReloadTargetDescriptor(
             targetId = "$packageName/$processName",
@@ -238,6 +265,8 @@ class LibXposedPackageReplay(private val namespace: String = "roxyhook.reload.")
             applicationPackageName = applicationInfo?.packageName ?: packageName,
             applicationClassName = applicationInfo?.className,
             packageName = packageName,
+            loaderIdentity = loaderIdentity,
+            loaderType = loaderType,
         )
 
         fun toPackageContext(process: ProcessContext, loader: ClassLoader) = PackageContext(
@@ -273,6 +302,8 @@ class LibXposedPackageReplay(private val namespace: String = "roxyhook.reload.")
                     state.getString("modulePackage"),
                     state.getString("moduleApkPath"),
                     info,
+                    if (state.containsKey("loaderIdentity")) state.getInt("loaderIdentity") else null,
+                    state.getString("loaderType"),
                 )
             }
         }
@@ -284,6 +315,8 @@ class LibXposedPackageReplay(private val namespace: String = "roxyhook.reload.")
         val applicationPackageName: String?,
         val applicationClassName: String?,
         val packageName: String,
+        val loaderIdentity: Int?,
+        val loaderType: String?,
     )
 
     private fun PackageContext.toBundle() = Bundle().apply {
@@ -296,6 +329,8 @@ class LibXposedPackageReplay(private val namespace: String = "roxyhook.reload.")
         putInt("userId", userId)
         putString("modulePackage", modulePackageName)
         putString("moduleApkPath", moduleApkPath)
+        putInt("loaderIdentity", System.identityHashCode(this@toBundle.classLoader))
+        putString("loaderType", this@toBundle.classLoader.javaClass.name)
         (platformSnapshot as? ApplicationInfoSnapshot)?.applicationInfo?.let {
             putParcelable(
                 "appInfo",
@@ -305,7 +340,7 @@ class LibXposedPackageReplay(private val namespace: String = "roxyhook.reload.")
     }
 
     private companion object {
-        const val STATE_VERSION = 1;
+        const val STATE_VERSION = 1
         const val MAX_CONTEXTS = 64
     }
 }

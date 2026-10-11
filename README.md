@@ -148,8 +148,10 @@ override fun installAfterHotReload(runtime: RoxyRuntime, process: ProcessContext
 }
 ```
 
-作用域快照只存 Android 框架值；目标 ClassLoader 从旧 Hook
-的目标方法所属类恢复，不能唯一确定时跳过该作用域并记录警告，不会猜测或复用旧模块对象。仍需在
+作用域快照只存 Android 框架值，包括原事件 ClassLoader 的进程内 identity hash 和类型名；
+重放时从旧 Hook 的目标方法所属类中匹配原加载器，支持 system_server 内多个包使用不同加载器。
+应用作用域也可从同包的存活 Application 恢复加载器。旧版快照继续使用原有归属检查；
+不能唯一确定时跳过该作用域并记录警告，不会猜测或复用旧模块对象。仍需在
 `prepareHotReload` 自行停止模块创建的非托管线程和 JNI 回调。
 如需从已有模块的热重载实现迁移，可向 `LibXposedPackageReplay` 传入原有 Bundle 键前缀（例如
 `"my.module.reload."`）以兼容进行中的旧代状态。
